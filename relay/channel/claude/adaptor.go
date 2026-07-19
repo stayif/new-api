@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/relay/channel"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
@@ -119,6 +120,37 @@ func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommo
 
 func (a *Adaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, requestBody io.Reader) (any, error) {
 	return channel.DoApiRequest(a, c, info, requestBody)
+}
+
+func (a *Adaptor) CompileAttestedProviderRequest(c *gin.Context, info *relaycommon.RelayInfo, compiledBody []byte) ([]byte, error) {
+	if c == nil || info == nil {
+		return nil, errors.New("attested provider compilation requires request context and relay info")
+	}
+	var compiled dto.ClaudeRequest
+	if err := common.Unmarshal(compiledBody, &compiled); err != nil {
+		return nil, fmt.Errorf("decode compiled Anthropic request: %w", err)
+	}
+	if compiled.Model == "" || compiled.Model != info.UpstreamModelName {
+		return nil, errors.New("compiled Anthropic model does not match selected upstream model")
+	}
+	if compiled.Stream == nil || !*compiled.Stream {
+		return nil, errors.New("attested Anthropic execution must be streaming")
+	}
+	if compiled.Thinking == nil || compiled.Thinking.Type != "enabled" || compiled.Thinking.GetBudgetTokens() < 1024 {
+		return nil, errors.New("attested Anthropic execution requires explicitly enabled thinking")
+	}
+	if compiled.MaxTokens == nil || int(*compiled.MaxTokens) <= compiled.Thinking.GetBudgetTokens() {
+		return nil, errors.New("compiled Anthropic max_tokens must leave room for ordinary text")
+	}
+	if compiled.Thinking.Display != "" && compiled.Thinking.Display != "summarized" {
+		return nil, errors.New("attested Anthropic execution requires summarized thinking")
+	}
+	compiled.Thinking.Display = "summarized"
+	compiledBody, err := common.Marshal(compiled)
+	if err != nil {
+		return nil, fmt.Errorf("marshal final Anthropic request: %w", err)
+	}
+	return compiledBody, nil
 }
 
 func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo) (usage any, err *types.NewAPIError) {

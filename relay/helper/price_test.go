@@ -272,3 +272,40 @@ func TestModelPriceHelperRequestBillingRatiosOnlyApplyToFixedPrice(t *testing.T)
 	require.Equal(t, common.QuotaClampOverflow, clamp.Kind)
 	require.Nil(t, info.Billing)
 }
+
+func TestModelPriceHelperAttestedAliasUsesPinnedUpstreamBillingIdentity(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	savedModelPrices := ratio_setting.ModelPrice2JSONString()
+	savedModelRatios := ratio_setting.ModelRatio2JSONString()
+	savedCompletionRatios := ratio_setting.CompletionRatio2JSONString()
+	t.Cleanup(func() {
+		require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(savedModelPrices))
+		require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(savedModelRatios))
+		require.NoError(t, ratio_setting.UpdateCompletionRatioByJSONString(savedCompletionRatios))
+	})
+
+	require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(`{}`))
+	require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(`{"priced-upstream":0.5}`))
+	require.NoError(t, ratio_setting.UpdateCompletionRatioByJSONString(`{"priced-upstream":5}`))
+
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Set("group", "default")
+	info := &relaycommon.RelayInfo{
+		OriginModelName: "unpriced-attested-alias",
+		UserGroup:       "default",
+		UsingGroup:      "default",
+		AttestedRelay: &relaycommon.AttestedRelayState{
+			UpstreamModel: "priced-upstream",
+		},
+	}
+
+	priceData, err := ModelPriceHelper(ctx, info, 1000, &types.TokenCountMeta{})
+	require.NoError(t, err)
+	require.Equal(t, 0.5, priceData.ModelRatio)
+	require.Equal(t, float64(5), priceData.CompletionRatio)
+	require.NotNil(t, info.AttestedRelay.Billing)
+	require.Equal(t, "priced-upstream", info.AttestedRelay.Billing.Model)
+	require.Equal(t, "ratio", info.AttestedRelay.Billing.Mode)
+	require.Equal(t, 0.5, info.AttestedRelay.Billing.ModelRatio)
+	require.Equal(t, float64(5), info.AttestedRelay.Billing.CompletionRatio)
+}

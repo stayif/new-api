@@ -10,6 +10,7 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/logger"
+	"github.com/QuantumNous/new-api/relay/channel"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relay/helper"
@@ -71,6 +72,9 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 	adaptor.Init(info)
 
 	passThroughGlobal := model_setting.GetGlobalSettings().PassThroughRequestEnabled
+	if relaycommon.IsAttestationRequested(c) && (passThroughGlobal || info.ChannelSetting.PassThroughBodyEnabled) {
+		return types.NewErrorWithStatusCode(fmt.Errorf("attested relay forbids pass-through request bodies"), types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+	}
 	if info.RelayMode == relayconstant.RelayModeChatCompletions &&
 		!passThroughGlobal &&
 		!info.ChannelSetting.PassThroughBodyEnabled &&
@@ -175,6 +179,25 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 
 		logger.LogDebug(c, "text request body: %s", jsonData)
 
+		if relaycommon.IsAttestationRequested(c) {
+			state, err := relaycommon.StartAttestedRelay(c, info, jsonData)
+			if err != nil {
+				return types.NewErrorWithStatusCode(err, types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+			}
+			compiler, ok := adaptor.(channel.AttestedProviderCompiler)
+			if !ok {
+				return types.NewErrorWithStatusCode(fmt.Errorf("selected provider cannot compile an attested request"), types.ErrorCodeConvertRequestFailed, http.StatusBadGateway, types.ErrOptionWithSkipRetry())
+			}
+			finalJSON, err := compiler.CompileAttestedProviderRequest(c, info, jsonData)
+			if err != nil {
+				return types.NewErrorWithStatusCode(err, types.ErrorCodeConvertRequestFailed, http.StatusBadGateway, types.ErrOptionWithSkipRetry())
+			}
+			jsonData = finalJSON
+			if err := state.SetCompiledRequest(jsonData); err != nil {
+				return types.NewErrorWithStatusCode(err, types.ErrorCodeConvertRequestFailed, http.StatusBadGateway, types.ErrOptionWithSkipRetry())
+			}
+		}
+
 		body, size, closer, err := relaycommon.NewOutboundJSONBody(jsonData)
 		if err != nil {
 			return types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
@@ -210,14 +233,35 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 		service.ResetStatusCode(newApiErr, statusCodeMappingStr)
 		return newApiErr
 	}
+	usageReceipt := usage.(*dto.Usage)
+	var attestedEnvelope *relaycommon.AttestedRelayEnvelope
+	if info.AttestedRelay != nil {
+		attestedEnvelope, err = info.AttestedRelay.BuildSuccessEnvelope(
+			info,
+			usageReceipt,
+			c.GetString(common.RequestIdKey),
+			c.GetString(common.UpstreamRequestIdKey),
+		)
+		if err != nil {
+			_ = helper.ObjectData(c, relaycommon.NewAttestedRelayErrorEnvelope(info, "attestation_failed"))
+			helper.Done(c)
+			return types.NewError(err, types.ErrorCodeBadResponseBody, types.ErrOptionWithSkipRetry())
+		}
+	}
 
-	var containAudioTokens = usage.(*dto.Usage).CompletionTokenDetails.AudioTokens > 0 || usage.(*dto.Usage).PromptTokensDetails.AudioTokens > 0
+	var containAudioTokens = usageReceipt.CompletionTokenDetails.AudioTokens > 0 || usageReceipt.PromptTokensDetails.AudioTokens > 0
 	var containsAudioRatios = ratio_setting.ContainsAudioRatio(info.OriginModelName) || ratio_setting.ContainsAudioCompletionRatio(info.OriginModelName)
 
 	if containAudioTokens && containsAudioRatios {
-		service.PostAudioConsumeQuota(c, info, usage.(*dto.Usage), "")
+		service.PostAudioConsumeQuota(c, info, usageReceipt, "")
 	} else {
-		service.PostTextConsumeQuota(c, info, usage.(*dto.Usage), nil)
+		service.PostTextConsumeQuota(c, info, usageReceipt, nil)
+	}
+	if attestedEnvelope != nil {
+		if err := helper.ObjectData(c, attestedEnvelope); err != nil {
+			return types.NewError(err, types.ErrorCodeBadResponseBody, types.ErrOptionWithSkipRetry())
+		}
+		helper.Done(c)
 	}
 	return nil
 }
