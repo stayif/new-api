@@ -1,15 +1,20 @@
 package claude
 
 import (
+	"bytes"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/relay/channel"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/service/relayconvert"
 	"github.com/QuantumNous/new-api/setting/model_setting"
 	"github.com/QuantumNous/new-api/types"
@@ -119,6 +124,100 @@ func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommo
 
 func (a *Adaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, requestBody io.Reader) (any, error) {
 	return channel.DoApiRequest(a, c, info, requestBody)
+}
+
+func (a *Adaptor) CompileAndCountProviderTokens(c *gin.Context, info *relaycommon.RelayInfo, compiledBody []byte) ([]byte, *relaycommon.ProviderTokenCountReceipt, error) {
+	if c == nil || info == nil {
+		return nil, nil, errors.New("provider token count requires request context and relay info")
+	}
+	var compiled dto.ClaudeRequest
+	if err := common.Unmarshal(compiledBody, &compiled); err != nil {
+		return nil, nil, fmt.Errorf("decode compiled Anthropic request: %w", err)
+	}
+	if compiled.Model == "" || compiled.Model != info.UpstreamModelName {
+		return nil, nil, errors.New("compiled Anthropic model does not match selected upstream model")
+	}
+	if compiled.Stream == nil || !*compiled.Stream {
+		return nil, nil, errors.New("attested Anthropic execution must be streaming")
+	}
+	if compiled.Thinking == nil || compiled.Thinking.Type != "enabled" || compiled.Thinking.GetBudgetTokens() < 1024 {
+		return nil, nil, errors.New("attested Anthropic execution requires explicitly enabled thinking")
+	}
+	if compiled.MaxTokens == nil || int(*compiled.MaxTokens) <= compiled.Thinking.GetBudgetTokens() {
+		return nil, nil, errors.New("compiled Anthropic max_tokens must leave room for ordinary text")
+	}
+	if compiled.Thinking.Display != "" && compiled.Thinking.Display != "summarized" {
+		return nil, nil, errors.New("attested Anthropic execution requires summarized thinking")
+	}
+	compiled.Thinking.Display = "summarized"
+	compiledBody, err := common.Marshal(compiled)
+	if err != nil {
+		return nil, nil, fmt.Errorf("marshal final Anthropic request: %w", err)
+	}
+
+	var compiledMap map[string]any
+	if err := common.Unmarshal(compiledBody, &compiledMap); err != nil {
+		return nil, nil, fmt.Errorf("decode compiled Anthropic body: %w", err)
+	}
+	countBody := make(map[string]any)
+	for _, name := range []string{"model", "messages", "system", "tools", "tool_choice", "thinking"} {
+		if value, ok := compiledMap[name]; ok {
+			countBody[name] = value
+		}
+	}
+	countJSON, err := common.Marshal(countBody)
+	if err != nil {
+		return nil, nil, fmt.Errorf("marshal Anthropic count request: %w", err)
+	}
+
+	countURL := strings.TrimRight(info.ChannelBaseUrl, "/") + "/v1/messages/count_tokens"
+	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, countURL, bytes.NewReader(countJSON))
+	if err != nil {
+		return nil, nil, fmt.Errorf("create Anthropic count request: %w", err)
+	}
+	if err := channel.ApplyAdaptorRequestHeaders(a, c, info, req); err != nil {
+		return nil, nil, err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/json")
+	req.ContentLength = int64(len(countJSON))
+
+	httpClient := service.GetHttpClient()
+	if info.ChannelSetting.Proxy != "" {
+		httpClient, err = service.NewProxyHttpClient(info.ChannelSetting.Proxy)
+		if err != nil {
+			return nil, nil, fmt.Errorf("create provider count proxy client: %w", err)
+		}
+	}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, nil, fmt.Errorf("provider token count request failed: %w", err)
+	}
+	defer service.CloseResponseBodyGracefully(resp)
+	responseBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, nil, fmt.Errorf("read provider token count response: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, nil, fmt.Errorf("provider token count returned status %d", resp.StatusCode)
+	}
+	var countResponse struct {
+		InputTokens int `json:"input_tokens"`
+	}
+	if err := common.Unmarshal(responseBody, &countResponse); err != nil {
+		return nil, nil, fmt.Errorf("decode provider token count response: %w", err)
+	}
+	requestID := channel.CaptureProviderRequestID(nil, resp.Header)
+	if countResponse.InputTokens <= 0 || requestID == "" {
+		return nil, nil, errors.New("provider token count response is missing tokens or request id")
+	}
+	digest := sha256.Sum256(countJSON)
+	return compiledBody, &relaycommon.ProviderTokenCountReceipt{
+		InputTokens:       countResponse.InputTokens,
+		RequestID:         requestID,
+		RequestBodySHA256: fmt.Sprintf("sha256:%x", digest),
+		Source:            "anthropic.messages.count_tokens",
+	}, nil
 }
 
 func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo) (usage any, err *types.NewAPIError) {

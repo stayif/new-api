@@ -176,6 +176,10 @@ func cloneClaudeUsage(usage *ClaudeUsage) *ClaudeUsage {
 		serverToolUse := *usage.ServerToolUse
 		clone.ServerToolUse = &serverToolUse
 	}
+	if usage.OutputTokensDetails != nil {
+		outputTokensDetails := *usage.OutputTokensDetails
+		clone.OutputTokensDetails = &outputTokensDetails
+	}
 	return &clone
 }
 

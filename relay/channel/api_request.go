@@ -56,6 +56,39 @@ func SetupApiRequestHeader(info *common.RelayInfo, c *gin.Context, req *http.Hea
 	}
 }
 
+// ApplyAdaptorRequestHeaders applies the adaptor's native authentication and
+// the channel's configured overrides to an auxiliary provider request.
+func ApplyAdaptorRequestHeaders(a Adaptor, c *gin.Context, info *common.RelayInfo, req *http.Request) error {
+	if a == nil || c == nil || info == nil || req == nil {
+		return errors.New("missing adaptor request header input")
+	}
+	headers := req.Header
+	if err := a.SetupRequestHeader(c, &headers, info); err != nil {
+		return fmt.Errorf("setup request header failed: %w", err)
+	}
+	headerOverride, err := processHeaderOverride(info, c)
+	if err != nil {
+		return err
+	}
+	applyHeaderOverrideToRequest(req, headerOverride)
+	return nil
+}
+
+func CaptureProviderRequestID(c *gin.Context, header http.Header) string {
+	if header == nil {
+		return ""
+	}
+	for _, name := range []string{common2.RequestIdKey, "request-id", "x-request-id"} {
+		if value := strings.TrimSpace(header.Get(name)); value != "" {
+			if c != nil {
+				c.Set(common2.UpstreamRequestIdKey, value)
+			}
+			return value
+		}
+	}
+	return ""
+}
+
 const clientHeaderPlaceholderPrefix = "{client_header:"
 
 const (
@@ -515,9 +548,7 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 		return nil, errors.New("resp is nil")
 	}
 
-	if upID := resp.Header.Get(common2.RequestIdKey); upID != "" {
-		c.Set(common2.UpstreamRequestIdKey, upID)
-	}
+	CaptureProviderRequestID(c, resp.Header)
 
 	_ = req.Body.Close()
 	_ = c.Request.Body.Close()

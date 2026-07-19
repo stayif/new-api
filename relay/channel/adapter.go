@@ -31,6 +31,13 @@ type Adaptor interface {
 	ConvertGeminiRequest(c *gin.Context, info *relaycommon.RelayInfo, request *dto.GeminiChatRequest) (any, error)
 }
 
+// AttestedProviderCompiler is implemented only by provider adaptors that can
+// finalize a deterministic native body and ask the provider to count that
+// exact body before execution.
+type AttestedProviderCompiler interface {
+	CompileAndCountProviderTokens(c *gin.Context, info *relaycommon.RelayInfo, compiledBody []byte) ([]byte, *relaycommon.ProviderTokenCountReceipt, error)
+}
+
 type TaskAdaptor interface {
 	Init(info *relaycommon.RelayInfo)
 
