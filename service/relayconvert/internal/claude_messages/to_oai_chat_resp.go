@@ -175,6 +175,9 @@ func UsageFromClaudeAPIUsage(usage *dto.ClaudeUsage) *dto.Usage {
 		UsageSource:      "anthropic",
 		BillingUsage:     dto.CloneBillingUsage(usage.BillingUsage),
 	}
+	if usage.OutputTokensDetails != nil {
+		semanticUsage.CompletionTokenDetails.ReasoningTokens = usage.OutputTokensDetails.ThinkingTokens
+	}
 	if semanticUsage.BillingUsage == nil {
 		semanticUsage.BillingUsage = dto.NewClaudeMessagesBillingUsage(usage)
 	}
@@ -286,6 +289,11 @@ func claudeBillingUsageFromSemanticUsage(usage *dto.Usage) *dto.BillingUsage {
 		CacheReadInputTokens:     usage.PromptTokensDetails.CachedTokens,
 		OutputTokens:             usage.CompletionTokens,
 	}
+	if usage.CompletionTokenDetails.ReasoningTokens > 0 {
+		claudeUsage.OutputTokensDetails = &dto.ClaudeOutputTokensDetails{
+			ThinkingTokens: usage.CompletionTokenDetails.ReasoningTokens,
+		}
+	}
 	if cacheCreation5m > 0 || cacheCreation1h > 0 {
 		claudeUsage.CacheCreation = &dto.ClaudeCacheCreationUsage{
 			Ephemeral5mInputTokens: cacheCreation5m,
@@ -350,6 +358,9 @@ func FormatClaudeResponseInfo(claudeResponse *dto.ClaudeResponse, oaiResponse *d
 			claudeInfo.Usage.ClaudeCacheCreation5mTokens = claudeResponse.Message.Usage.GetCacheCreation5mTokens()
 			claudeInfo.Usage.ClaudeCacheCreation1hTokens = claudeResponse.Message.Usage.GetCacheCreation1hTokens()
 			claudeInfo.Usage.CompletionTokens = claudeResponse.Message.Usage.OutputTokens
+			if claudeResponse.Message.Usage.OutputTokensDetails != nil {
+				claudeInfo.Usage.CompletionTokenDetails.ReasoningTokens = claudeResponse.Message.Usage.OutputTokensDetails.ThinkingTokens
+			}
 			claudeInfo.Usage.BillingUsage = claudeBillingUsageFromSemanticUsage(claudeInfo.Usage)
 		}
 	} else if claudeResponse.Type == "content_block_delta" {
@@ -381,6 +392,9 @@ func FormatClaudeResponseInfo(claudeResponse *dto.ClaudeResponse, oaiResponse *d
 			}
 			if claudeResponse.Usage.OutputTokens > 0 {
 				claudeInfo.Usage.CompletionTokens = claudeResponse.Usage.OutputTokens
+			}
+			if claudeResponse.Usage.OutputTokensDetails != nil {
+				claudeInfo.Usage.CompletionTokenDetails.ReasoningTokens = claudeResponse.Usage.OutputTokensDetails.ThinkingTokens
 			}
 			claudeInfo.Usage.TotalTokens = claudeInfo.Usage.PromptTokens + claudeInfo.Usage.CompletionTokens
 			claudeInfo.Usage.BillingUsage = claudeBillingUsageFromSemanticUsage(claudeInfo.Usage)

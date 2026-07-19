@@ -89,6 +89,9 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	defer func() {
 		if newAPIError != nil {
 			logger.LogError(c, fmt.Sprintf("relay error: %s", common.LocalLogPreview(newAPIError.Error())))
+			if c.Writer.Written() {
+				return
+			}
 			newAPIError.SetMessage(common.MessageWithRequestId(newAPIError.Error(), requestId))
 			switch relayFormat {
 			case types.RelayFormatOpenAIRealtime:
@@ -121,6 +124,21 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	if err != nil {
 		newAPIError = types.NewError(err, types.ErrorCodeGenRelayInfoFailed)
 		return
+	}
+	if relaycommon.IsAttestationRequested(c) {
+		relayInfo.InitChannelMeta(c)
+		if err := helper.ModelMappedHelper(c, relayInfo, request); err != nil {
+			logger.LogError(c, fmt.Sprintf("attested relay model mapping failed: %s", err.Error()))
+			_ = helper.ObjectData(c, relaycommon.NewAttestedRelayErrorEnvelope(relayInfo, "attestation_rejected"))
+			helper.Done(c)
+			return
+		}
+		if _, err := relaycommon.PreflightAttestedRelay(c, relayInfo); err != nil {
+			logger.LogError(c, fmt.Sprintf("attested relay preflight failed: %s", err.Error()))
+			_ = helper.ObjectData(c, relaycommon.NewAttestedRelayErrorEnvelope(relayInfo, "attestation_rejected"))
+			helper.Done(c)
+			return
+		}
 	}
 
 	needSensitiveCheck := setting.ShouldCheckPromptSensitive()
