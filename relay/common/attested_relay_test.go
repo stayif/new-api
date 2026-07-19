@@ -54,6 +54,7 @@ func TestAttestedRelayBuildsSignedProviderReceipt(t *testing.T) {
 
 	state, err := StartAttestedRelay(c, info, []byte(`{"model":"claude-sonnet-4-6"}`))
 	require.NoError(t, err)
+	require.NoError(t, state.SetBillingReceipt("claude-sonnet-4-6", "ratio", 0.5, 5, 1, 0))
 	require.NoError(t, state.SetCompiledRequest([]byte(`{"model":"claude-sonnet-4-6"}`), &ProviderTokenCountReceipt{
 		InputTokens:       17,
 		RequestID:         "count_req_1",
@@ -98,6 +99,10 @@ func TestAttestedRelayBuildsSignedProviderReceipt(t *testing.T) {
 	require.Equal(t, "execute_req_1", envelope.Receipt.ExecutionRequestID)
 	require.Equal(t, 19, envelope.Receipt.Usage.ReasoningTokens)
 	require.Positive(t, envelope.Receipt.Reasoning.Chars)
+	require.Equal(t, "claude-sonnet-4-6", envelope.Receipt.Billing.Model)
+	require.Equal(t, "ratio", envelope.Receipt.Billing.Mode)
+	require.Equal(t, 0.5, envelope.Receipt.Billing.ModelRatio)
+	require.Equal(t, float64(5), envelope.Receipt.Billing.CompletionRatio)
 
 	payload, err := basecommon.Marshal(envelope.Receipt)
 	require.NoError(t, err)
@@ -123,6 +128,7 @@ func TestAttestedRelayRejectsEstimatedSettlementUsage(t *testing.T) {
 	c := newAttestedRelayTestContext(t, info, secret)
 	state, err := StartAttestedRelay(c, info, []byte(`{}`))
 	require.NoError(t, err)
+	require.NoError(t, state.SetBillingReceipt("claude-sonnet-4-6", "ratio", 0.5, 5, 1, 0))
 	require.NoError(t, state.SetCompiledRequest([]byte(`{}`), &ProviderTokenCountReceipt{
 		InputTokens: 17, RequestID: "count_req", RequestBodySHA256: "sha256:count", Source: "anthropic.messages.count_tokens",
 	}))

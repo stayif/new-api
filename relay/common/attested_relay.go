@@ -55,6 +55,7 @@ type AttestedRelayState struct {
 	ProviderPromptTokens     int
 	ProviderCompletionTokens int
 	ProviderDone             bool
+	Billing                  *AttestedRelayBilling
 }
 
 type AttestedRelayCount struct {
@@ -77,6 +78,16 @@ type AttestedRelayReasoning struct {
 	Chars  int    `json:"chars"`
 }
 
+type AttestedRelayBilling struct {
+	Source          string  `json:"source"`
+	Model           string  `json:"model"`
+	Mode            string  `json:"mode"`
+	ModelRatio      float64 `json:"model_ratio"`
+	CompletionRatio float64 `json:"completion_ratio"`
+	GroupRatio      float64 `json:"group_ratio"`
+	ModelPrice      float64 `json:"model_price"`
+}
+
 type AttestedRelayReceipt struct {
 	Schema             string                 `json:"schema"`
 	PolicyVersion      string                 `json:"policy_version"`
@@ -94,6 +105,7 @@ type AttestedRelayReceipt struct {
 	ExecutionRequestID string                 `json:"execution_request_id"`
 	Usage              AttestedRelayUsage     `json:"usage"`
 	Reasoning          AttestedRelayReasoning `json:"reasoning"`
+	Billing            AttestedRelayBilling   `json:"billing"`
 	Terminal           string                 `json:"terminal"`
 }
 
@@ -116,15 +128,19 @@ func IsAttestationRequested(c *gin.Context) bool {
 	return c != nil && strings.TrimSpace(c.GetHeader(AttestationVersionHeader)) != ""
 }
 
-func StartAttestedRelay(c *gin.Context, info *RelayInfo, compiledBody []byte) (*AttestedRelayState, error) {
+func PreflightAttestedRelay(c *gin.Context, info *RelayInfo) (*AttestedRelayState, error) {
 	if c == nil || info == nil {
 		return nil, errors.New("attested relay requires request context and relay info")
 	}
 	if c.GetHeader(AttestationVersionHeader) != attestationVersion {
 		return nil, errors.New("unsupported attestation version")
 	}
-	if !info.IsStream || !info.ShouldIncludeUsage {
-		return nil, errors.New("attested relay requires streaming with include_usage")
+	if !info.IsStream {
+		return nil, errors.New("attested relay requires streaming")
+	}
+	if info.ChannelMeta == nil || info.ChannelId <= 0 || info.ChannelType <= 0 ||
+		strings.TrimSpace(info.ChannelBaseUrl) == "" || strings.TrimSpace(info.UpstreamModelName) == "" {
+		return nil, errors.New("attested relay route is incomplete")
 	}
 	if info.ChannelSetting.PassThroughBodyEnabled {
 		return nil, errors.New("attested relay forbids pass-through request bodies")
@@ -153,6 +169,15 @@ func StartAttestedRelay(c *gin.Context, info *RelayInfo, compiledBody []byte) (*
 		return nil, errors.New("attestation secret is not configured")
 	}
 	routeFingerprint := attestedRouteFingerprint(secret, info)
+	state := &AttestedRelayState{
+		PolicyVersion:    policy,
+		AttemptID:        attempt,
+		LogicalModel:     logicalModel,
+		SelectedModel:    info.OriginModelName,
+		UpstreamModel:    info.UpstreamModelName,
+		RouteFingerprint: routeFingerprint,
+	}
+	info.AttestedRelay = state
 	if !hmac.Equal([]byte(expectedRoute), []byte(routeFingerprint)) {
 		return nil, errors.New("selected route does not match pinned route")
 	}
@@ -170,19 +195,72 @@ func StartAttestedRelay(c *gin.Context, info *RelayInfo, compiledBody []byte) (*
 	if !hmac.Equal([]byte(providedAuthorization), []byte(expectedAuthorization)) {
 		return nil, errors.New("invalid attestation authorization")
 	}
+	return state, nil
+}
+
+func StartAttestedRelay(c *gin.Context, info *RelayInfo, compiledBody []byte) (*AttestedRelayState, error) {
+	if c == nil || info == nil {
+		return nil, errors.New("attested relay requires request context and relay info")
+	}
+	state := info.AttestedRelay
+	if state == nil {
+		var err error
+		state, err = PreflightAttestedRelay(c, info)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if !info.IsStream || !info.ShouldIncludeUsage {
+		return nil, errors.New("attested relay requires streaming with include_usage")
+	}
+	if info.ChannelSetting.PassThroughBodyEnabled {
+		return nil, errors.New("attested relay forbids pass-through request bodies")
+	}
+	if info.ChannelSetting.ThinkingToContent {
+		return nil, errors.New("attested relay forbids mixing reasoning into content")
+	}
+	if state.SelectedModel != info.OriginModelName || state.UpstreamModel != info.UpstreamModelName ||
+		state.RouteFingerprint != attestedRouteFingerprint(strings.TrimSpace(os.Getenv(attestationSecretEnv)), info) {
+		return nil, errors.New("attested relay route drifted after preflight")
+	}
 
 	digest := sha256.Sum256(compiledBody)
-	state := &AttestedRelayState{
-		PolicyVersion:      policy,
-		AttemptID:          attempt,
-		LogicalModel:       logicalModel,
-		SelectedModel:      info.OriginModelName,
-		UpstreamModel:      info.UpstreamModelName,
-		RouteFingerprint:   routeFingerprint,
-		CompiledBodySHA256: fmt.Sprintf("sha256:%x", digest),
-	}
-	info.AttestedRelay = state
+	state.CompiledBodySHA256 = fmt.Sprintf("sha256:%x", digest)
 	return state, nil
+}
+
+func (s *AttestedRelayState) SetBillingReceipt(model, mode string, modelRatio, completionRatio, groupRatio, modelPrice float64) error {
+	if s == nil {
+		return errors.New("attested relay billing state is missing")
+	}
+	if strings.TrimSpace(model) == "" || model != s.UpstreamModel {
+		return errors.New("attested relay billing model does not match the upstream model")
+	}
+	if groupRatio <= 0 {
+		return errors.New("attested relay billing group ratio must be positive")
+	}
+	switch mode {
+	case "ratio":
+		if modelRatio <= 0 || completionRatio <= 0 || modelPrice != 0 {
+			return errors.New("attested relay ratio billing receipt is invalid")
+		}
+	case "price":
+		if modelPrice <= 0 || modelRatio != 0 {
+			return errors.New("attested relay fixed-price billing receipt is invalid")
+		}
+	default:
+		return errors.New("attested relay billing mode is unsupported")
+	}
+	s.Billing = &AttestedRelayBilling{
+		Source:          "newapi.price_data",
+		Model:           model,
+		Mode:            mode,
+		ModelRatio:      modelRatio,
+		CompletionRatio: completionRatio,
+		GroupRatio:      groupRatio,
+		ModelPrice:      modelPrice,
+	}
+	return nil
 }
 
 func (s *AttestedRelayState) SetCompiledRequest(compiledBody []byte, count *ProviderTokenCountReceipt) error {
@@ -281,6 +359,9 @@ func (s *AttestedRelayState) BuildSuccessEnvelope(info *RelayInfo, usage *dto.Us
 	if s.Count == nil {
 		return nil, errors.New("provider token count receipt is missing")
 	}
+	if s.Billing == nil {
+		return nil, errors.New("provider billing identity receipt is missing")
+	}
 	if !s.ProviderDone || s.ResponseModel == "" {
 		return nil, errors.New("provider stream did not reach message_stop")
 	}
@@ -339,6 +420,7 @@ func (s *AttestedRelayState) BuildSuccessEnvelope(info *RelayInfo, usage *dto.Us
 			Source: "anthropic.thinking_delta",
 			Chars:  s.ReasoningChars,
 		},
+		Billing:  *s.Billing,
 		Terminal: "succeeded",
 	}
 
