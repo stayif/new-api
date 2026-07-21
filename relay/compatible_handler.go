@@ -235,13 +235,20 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 		}
 		service.PostAudioConsumeQuota(c, info, usage.(*dto.Usage), "")
 	} else {
-		settlement := service.PostTextConsumeQuota(c, info, usage.(*dto.Usage), nil)
 		if info.HoneyAttestedRelay != nil {
+			newAPIRequestID := c.GetString(common.RequestIdKey)
+			executionRequestID := c.GetString(common.UpstreamRequestIdKey)
+			if receiptErr := info.HoneyAttestedRelay.ValidateSuccessPrerequisites(info, newAPIRequestID, executionRequestID); receiptErr != nil {
+				_ = helper.ObjectData(c, relaycommon.NewHoneyAttestedErrorEnvelope(info, "attestation_failed"))
+				helper.Done(c)
+				return types.NewError(receiptErr, types.ErrorCodeBadResponseBody, types.ErrOptionWithSkipRetry())
+			}
+			settlement := service.PostTextConsumeQuota(c, info, usage.(*dto.Usage), nil)
 			envelope, receiptErr := info.HoneyAttestedRelay.BuildSuccessEnvelope(
 				info,
 				settlement,
-				c.GetString(common.RequestIdKey),
-				c.GetString(common.UpstreamRequestIdKey),
+				newAPIRequestID,
+				executionRequestID,
 			)
 			if receiptErr != nil {
 				_ = helper.ObjectData(c, relaycommon.NewHoneyAttestedErrorEnvelope(info, "attestation_failed"))
@@ -252,6 +259,8 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 				return types.NewError(writeErr, types.ErrorCodeBadResponseBody, types.ErrOptionWithSkipRetry())
 			}
 			helper.Done(c)
+		} else {
+			service.PostTextConsumeQuota(c, info, usage.(*dto.Usage), nil)
 		}
 	}
 	return nil

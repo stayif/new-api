@@ -103,6 +103,7 @@ type HoneyAttestedRelay struct {
 	CompiledBodySHA256 string
 	ResponseModel      string
 	ReasoningChars     int
+	ReasoningVisible   bool
 	TextChars          int
 	PromptTokens       int
 	CompletionTokens   int
@@ -245,7 +246,7 @@ func (s *HoneyAttestedRelay) observeText(value string) error {
 	if text == "" {
 		return nil
 	}
-	if s.ReasoningChars == 0 {
+	if !s.ReasoningVisible {
 		return errors.New("provider emitted text before visible reasoning")
 	}
 	s.TextStarted = true
@@ -257,15 +258,28 @@ func (s *HoneyAttestedRelay) observeReasoning(value string) error {
 	if s.TextStarted {
 		return errors.New("provider emitted reasoning after text")
 	}
-	if strings.TrimSpace(value) != "" || s.ReasoningChars > 0 {
-		s.ReasoningChars += len([]rune(value))
+	s.ReasoningChars += len([]rune(value))
+	if strings.TrimSpace(value) != "" {
+		s.ReasoningVisible = true
+	}
+	return nil
+}
+
+func (s *HoneyAttestedRelay) ValidateSuccessPrerequisites(info *RelayInfo, newAPIRequestID, executionRequestID string) error {
+	if s == nil || info == nil || !s.MessageStarted || !s.MessageStop || s.ResponseModel == "" ||
+		!s.ReasoningVisible || s.ReasoningChars == 0 || s.TextChars == 0 ||
+		newAPIRequestID == "" || executionRequestID == "" {
+		return errors.New("attested relay terminal contract is incomplete")
+	}
+	if len(strings.TrimSpace(os.Getenv(honeyAttestationSecret))) < 32 {
+		return errors.New("attestation secret is not configured")
 	}
 	return nil
 }
 
 func (s *HoneyAttestedRelay) BuildSuccessEnvelope(info *RelayInfo, settlement HoneyNewAPISettlement, newAPIRequestID, executionRequestID string) (*HoneyAttestedEnvelope, error) {
-	if s == nil || info == nil || !s.MessageStop || s.ResponseModel == "" || s.ReasoningChars == 0 || s.TextChars == 0 || newAPIRequestID == "" || executionRequestID == "" {
-		return nil, errors.New("attested relay terminal contract is incomplete")
+	if err := s.ValidateSuccessPrerequisites(info, newAPIRequestID, executionRequestID); err != nil {
+		return nil, err
 	}
 	provider := HoneyProviderReportedUsage{Status: "unknown"}
 	comparability := HoneyUsageComparability{Status: "not_comparable"}
@@ -282,9 +296,6 @@ func (s *HoneyAttestedRelay) BuildSuccessEnvelope(info *RelayInfo, settlement Ho
 	}
 	receipt := HoneyAttestedReceipt{Schema: HoneyAttestedRelaySchema, PolicyVersion: s.PolicyVersion, AttemptID: s.AttemptID, LogicalModel: s.LogicalModel, NewAPIRequestID: newAPIRequestID, SelectedModel: s.SelectedModel, UpstreamModel: s.UpstreamModel, ResponseModel: s.ResponseModel, RouteFingerprint: s.RouteFingerprint, Compiler: "openai_chat_completions_to_anthropic_messages", NewAPIVersion: basecommon.Version, CompiledBodySHA256: s.CompiledBodySHA256, ExecutionRequestID: executionRequestID, NewAPISettlement: settlement, ProviderReported: provider, UsageComparability: comparability, Reasoning: HoneyReasoningReceipt{Source: "anthropic.thinking_delta", Chars: s.ReasoningChars}, Terminal: "succeeded"}
 	secret := strings.TrimSpace(os.Getenv(honeyAttestationSecret))
-	if len(secret) < 32 {
-		return nil, errors.New("attestation secret is not configured")
-	}
 	payload, err := basecommon.Marshal(receipt)
 	if err != nil {
 		return nil, err
