@@ -33,17 +33,18 @@ func TestHoneyAttestedTerminalIsOneTypedEnvelopeFollowedByDone(t *testing.T) {
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 
-	finishHoneyAttestedStream(
+	require.NoError(t, finishHoneyAttestedStream(
 		c,
 		relaycommon.NewHoneyAttestedErrorEnvelope(
 			&relaycommon.RelayInfo{HoneyAttestedRelay: &relaycommon.HoneyAttestedRelay{AttemptID: "attempt-1"}},
 			"settlement_failed",
 		),
-	)
+	))
 
 	body := recorder.Body.String()
 	require.Equal(t, 2, strings.Count(body, "data: "))
 	require.Contains(t, body, `"object":"newapi.attested_relay.error"`)
 	require.Contains(t, body, `"code":"settlement_failed"`)
 	require.True(t, strings.HasSuffix(body, "data: [DONE]\n\n"))
+	require.True(t, relaycommon.HoneyAttestedTerminalWritten(c))
 }

@@ -20,7 +20,18 @@ const (
 	HoneyAttestedRelaySchema = "newapi.attested_relay.v3"
 	honeyAttestationVersion  = "2"
 	honeyAttestationSecret   = "HONEY_ATTESTATION_SECRET"
+	honeyTerminalWrittenKey  = "honey_attested_terminal_written"
 )
+
+func MarkHoneyAttestedTerminalWritten(c *gin.Context) {
+	if c != nil {
+		c.Set(honeyTerminalWrittenKey, true)
+	}
+}
+
+func HoneyAttestedTerminalWritten(c *gin.Context) bool {
+	return c != nil && c.GetBool(honeyTerminalWrittenKey)
+}
 
 var honeyIdentityPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
 
