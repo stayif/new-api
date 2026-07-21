@@ -225,6 +225,9 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 			if writeErr := finishHoneyAttestedFailure(c, info, "provider_stream_invalid"); writeErr != nil {
 				logger.LogError(c, "error writing attested relay provider failure: "+writeErr.Error())
 			}
+			// Once an attested terminal has been emitted, retrying this request could
+			// append a second execution and terminal to the same client stream.
+			newApiErr = markHoneyAttestedFailureNoRetry(newApiErr)
 		}
 		// reset status code 重置状态码
 		service.ResetStatusCode(newApiErr, statusCodeMappingStr)
@@ -294,6 +297,13 @@ func finishHoneyAttestedFailure(c *gin.Context, info *relaycommon.RelayInfo, cod
 		return nil
 	}
 	return finishHoneyAttestedStream(c, relaycommon.NewHoneyAttestedErrorEnvelope(info, code))
+}
+
+func markHoneyAttestedFailureNoRetry(newAPIError *types.NewAPIError) *types.NewAPIError {
+	if newAPIError == nil {
+		return nil
+	}
+	return types.NewError(newAPIError, newAPIError.GetErrorCode(), types.ErrOptionWithSkipRetry())
 }
 
 func shouldUseResponsesGlobal(c *gin.Context, info *relaycommon.RelayInfo) bool {

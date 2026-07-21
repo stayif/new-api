@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
@@ -68,4 +69,18 @@ func TestHoneyAttestedProviderFailureWritesOneTerminalOnly(t *testing.T) {
 	require.Contains(t, body, `"attempt_id":"attempt-provider-failure"`)
 	require.True(t, strings.HasSuffix(body, "data: [DONE]\n\n"))
 	require.True(t, relaycommon.HoneyAttestedTerminalWritten(c))
+}
+
+func TestHoneyAttestedProviderFailureErrorCanBeMarkedNoRetry(t *testing.T) {
+	providerError := types.WithClaudeError(
+		types.ClaudeError{Type: "upstream_error", Message: "provider failed"},
+		http.StatusInternalServerError,
+	)
+
+	marked := markHoneyAttestedFailureNoRetry(providerError)
+
+	require.Same(t, providerError, marked)
+	require.True(t, types.IsSkipRetryError(marked))
+	require.Equal(t, http.StatusInternalServerError, marked.StatusCode)
+	require.Equal(t, types.ErrorCode("upstream_error"), marked.GetErrorCode())
 }
