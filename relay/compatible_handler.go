@@ -239,15 +239,15 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 			newAPIRequestID := c.GetString(common.RequestIdKey)
 			executionRequestID := c.GetString(common.UpstreamRequestIdKey)
 			if receiptErr := info.HoneyAttestedRelay.ValidateSuccessPrerequisites(info, newAPIRequestID, executionRequestID); receiptErr != nil {
-				_ = helper.ObjectData(c, relaycommon.NewHoneyAttestedErrorEnvelope(info, "attestation_failed"))
-				helper.Done(c)
-				return types.NewError(receiptErr, types.ErrorCodeBadResponseBody, types.ErrOptionWithSkipRetry())
+				finishHoneyAttestedStream(c, relaycommon.NewHoneyAttestedErrorEnvelope(info, "attestation_failed"))
+				logger.LogError(c, "attested relay terminal validation failed: "+receiptErr.Error())
+				return nil
 			}
 			settlement, settlementErr := service.PostTextConsumeQuota(c, info, usage.(*dto.Usage), nil)
 			if settlementErr != nil {
-				_ = helper.ObjectData(c, relaycommon.NewHoneyAttestedErrorEnvelope(info, "settlement_failed"))
-				helper.Done(c)
-				return types.NewError(settlementErr, types.ErrorCodeBadResponseBody, types.ErrOptionWithSkipRetry())
+				finishHoneyAttestedStream(c, relaycommon.NewHoneyAttestedErrorEnvelope(info, "settlement_failed"))
+				logger.LogError(c, "attested relay settlement failed: "+settlementErr.Error())
+				return nil
 			}
 			envelope, receiptErr := info.HoneyAttestedRelay.BuildSuccessEnvelope(
 				info,
@@ -256,19 +256,26 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 				executionRequestID,
 			)
 			if receiptErr != nil {
-				_ = helper.ObjectData(c, relaycommon.NewHoneyAttestedErrorEnvelope(info, "attestation_failed"))
-				helper.Done(c)
-				return types.NewError(receiptErr, types.ErrorCodeBadResponseBody, types.ErrOptionWithSkipRetry())
+				finishHoneyAttestedStream(c, relaycommon.NewHoneyAttestedErrorEnvelope(info, "attestation_failed"))
+				logger.LogError(c, "attested relay receipt signing failed: "+receiptErr.Error())
+				return nil
 			}
-			if writeErr := helper.ObjectData(c, envelope); writeErr != nil {
-				return types.NewError(writeErr, types.ErrorCodeBadResponseBody, types.ErrOptionWithSkipRetry())
-			}
-			helper.Done(c)
+			finishHoneyAttestedStream(c, envelope)
 		} else {
 			service.PostTextConsumeQuota(c, info, usage.(*dto.Usage), nil)
 		}
 	}
 	return nil
+}
+
+func finishHoneyAttestedStream(c *gin.Context, envelope interface{}) {
+	if writeErr := helper.ObjectData(c, envelope); writeErr != nil {
+		logger.LogError(c, "error writing attested relay terminal envelope: "+writeErr.Error())
+		return
+	}
+	if writeErr := helper.StringData(c, "[DONE]"); writeErr != nil {
+		logger.LogError(c, "error writing attested relay stream terminator: "+writeErr.Error())
+	}
 }
 
 func shouldUseResponsesGlobal(c *gin.Context, info *relaycommon.RelayInfo) bool {
