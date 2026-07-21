@@ -81,12 +81,16 @@ func (s *BillingSession) Settle(actualQuota int) error {
 	return tokenErr
 }
 
-// settleHoneyAttestedLocked settles Honey's signed path in user-safe order.
-// Token quota is an enforcement projection, while funding is the NewAPI user
-// bill. Never commit the user bill first and then fail the Attempt because the
-// projection could not be updated. The caller holds s.mu.
+// settleHoneyAttestedLocked makes funding the signed NewAPI user settlement.
+// Token quota is an enforcement projection: a projection write failure is
+// audited, but cannot retroactively turn an already committed user bill into a
+// failed Attempt with no receipt. The caller holds s.mu.
 func (s *BillingSession) settleHoneyAttestedLocked(delta int) error {
-	tokenAdjusted := false
+	if err := s.funding.Settle(delta); err != nil {
+		return err
+	}
+	s.fundingSettled = true
+
 	if !s.relayInfo.IsPlayground {
 		var tokenErr error
 		if delta > 0 {
@@ -95,35 +99,16 @@ func (s *BillingSession) settleHoneyAttestedLocked(delta int) error {
 			tokenErr = model.IncreaseTokenQuota(s.relayInfo.TokenId, s.relayInfo.TokenKey, -delta)
 		}
 		if tokenErr != nil {
-			return tokenErr
+			common.SysLog(fmt.Sprintf(
+				"error updating attested token quota projection after funding settled (userId=%d, tokenId=%d, delta=%d): %s",
+				s.relayInfo.UserId,
+				s.relayInfo.TokenId,
+				delta,
+				tokenErr.Error(),
+			))
 		}
-		tokenAdjusted = true
 	}
 
-	if err := s.funding.Settle(delta); err != nil {
-		if tokenAdjusted {
-			var rollbackErr error
-			if delta > 0 {
-				rollbackErr = model.IncreaseTokenQuota(s.relayInfo.TokenId, s.relayInfo.TokenKey, delta)
-			} else {
-				rollbackErr = model.DecreaseTokenQuota(s.relayInfo.TokenId, s.relayInfo.TokenKey, -delta)
-			}
-			if rollbackErr != nil {
-				common.SysLog(fmt.Sprintf(
-					"error rolling back attested token quota after funding settlement failed (userId=%d, tokenId=%d, delta=%d, fundingErr=%s): %s",
-					s.relayInfo.UserId,
-					s.relayInfo.TokenId,
-					delta,
-					err.Error(),
-					rollbackErr.Error(),
-				))
-				return fmt.Errorf("attested funding settlement failed: %w; token quota rollback failed: %v", err, rollbackErr)
-			}
-		}
-		return err
-	}
-
-	s.fundingSettled = true
 	if s.funding.Source() == BillingSourceSubscription {
 		s.relayInfo.SubscriptionPostDelta += int64(delta)
 	}
