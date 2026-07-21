@@ -77,6 +77,7 @@ func TestHoneyAttestedRelayAllowsUnknownProviderUsageButNotTextBeforeReasoning(t
 	info := honeyTestInfo()
 	state, err := StartHoneyAttestedRelay(honeyTestContext(t, info), info, []byte(`{}`))
 	require.NoError(t, err)
+	require.NoError(t, state.ObserveClaudeResponse(&dto.ClaudeResponse{Type: "message_start", Message: &dto.ClaudeMediaMessage{Model: "claude-sonnet-4-6"}}))
 	text := "must not escape"
 	require.ErrorContains(t, state.ObserveClaudeResponse(&dto.ClaudeResponse{Type: "content_block_delta", Delta: &dto.ClaudeMediaMessage{Type: "text_delta", Text: &text}}), "before visible reasoning")
 
@@ -100,6 +101,24 @@ func TestHoneyAttestedRelayRejectsReasoningAfterTextAndRequiresMessageStop(t *te
 	require.ErrorContains(t, state.ObserveClaudeResponse(&dto.ClaudeResponse{Type: "content_block_delta", Delta: &dto.ClaudeMediaMessage{Type: "thinking_delta", Thinking: &late}}), "reasoning after text")
 	_, err = state.BuildSuccessEnvelope(info, HoneyNewAPISettlement{Amount: 1, Unit: "quota", Kind: "text_quota", Source: "newapi.final_settlement", BillingVersion: "v1", MultiplierVersion: "v1"}, "request-123", "upstream-123")
 	require.ErrorContains(t, err, "terminal contract")
+}
+
+func TestHoneyAttestedRelayRejectsUnknownAndPostTerminalEvents(t *testing.T) {
+	info := honeyTestInfo()
+	state, err := StartHoneyAttestedRelay(honeyTestContext(t, info), info, []byte(`{}`))
+	require.NoError(t, err)
+	require.ErrorContains(t, state.ObserveClaudeResponse(&dto.ClaudeResponse{Type: "content_block_stop"}), "before message_start")
+	require.NoError(t, state.ObserveClaudeResponse(&dto.ClaudeResponse{Type: "ping"}))
+	require.NoError(t, state.ObserveClaudeResponse(&dto.ClaudeResponse{Type: "message_start", Message: &dto.ClaudeMediaMessage{Model: "claude-sonnet-4-6"}}))
+	require.ErrorContains(t, state.ObserveClaudeResponse(&dto.ClaudeResponse{Type: "content_block_start", ContentBlock: &dto.ClaudeMediaMessage{Type: "tool_use"}}), "unsupported provider content block")
+	require.ErrorContains(t, state.ObserveClaudeResponse(&dto.ClaudeResponse{Type: "unexpected"}), "unsupported provider event")
+
+	reasoning, text := "reasoning", "answer"
+	require.NoError(t, state.ObserveClaudeResponse(&dto.ClaudeResponse{Type: "content_block_delta", Delta: &dto.ClaudeMediaMessage{Type: "thinking_delta", Thinking: &reasoning}}))
+	require.NoError(t, state.ObserveClaudeResponse(&dto.ClaudeResponse{Type: "content_block_delta", Delta: &dto.ClaudeMediaMessage{Type: "text_delta", Text: &text}}))
+	require.NoError(t, state.ObserveClaudeResponse(&dto.ClaudeResponse{Type: "message_stop"}))
+	require.ErrorContains(t, state.ObserveClaudeResponse(&dto.ClaudeResponse{Type: "message_stop"}), "after message_stop")
+	require.ErrorContains(t, state.ObserveClaudeResponse(&dto.ClaudeResponse{Type: "ping"}), "after message_stop")
 }
 
 func TestHoneyAttestedRelayMarksComparableUsageAtTheFiftyPercentBoundary(t *testing.T) {

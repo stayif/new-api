@@ -107,6 +107,7 @@ type HoneyAttestedRelay struct {
 	PromptTokens       int
 	CompletionTokens   int
 	ReasoningTokens    int
+	MessageStarted     bool
 	MessageStop        bool
 	TextStarted        bool
 }
@@ -159,11 +160,21 @@ func (s *HoneyAttestedRelay) ObserveClaudeResponse(response *dto.ClaudeResponse)
 	if s == nil || response == nil {
 		return errors.New("attested relay received an empty provider event")
 	}
+	if s.MessageStop {
+		return errors.New("provider emitted an event after message_stop")
+	}
+	if response.Type != "message_start" && response.Type != "ping" && !s.MessageStarted {
+		return errors.New("provider emitted content before message_start")
+	}
 	switch response.Type {
 	case "message_start":
+		if s.MessageStarted {
+			return errors.New("provider emitted duplicate message_start")
+		}
 		if response.Message == nil || response.Message.Model == "" || response.Message.Model != s.UpstreamModel {
 			return errors.New("provider message_start has an unexpected model")
 		}
+		s.MessageStarted = true
 		s.ResponseModel = response.Message.Model
 		if response.Message.Usage != nil && response.Message.Usage.InputTokens > 0 {
 			s.PromptTokens = response.Message.Usage.InputTokens
@@ -172,15 +183,21 @@ func (s *HoneyAttestedRelay) ObserveClaudeResponse(response *dto.ClaudeResponse)
 		if response.ContentBlock == nil {
 			return errors.New("provider content block is missing")
 		}
-		if response.ContentBlock.Type == "thinking" && response.ContentBlock.Thinking != nil {
-			if err := s.observeReasoning(*response.ContentBlock.Thinking); err != nil {
-				return err
+		switch response.ContentBlock.Type {
+		case "thinking":
+			if response.ContentBlock.Thinking != nil {
+				if err := s.observeReasoning(*response.ContentBlock.Thinking); err != nil {
+					return err
+				}
 			}
-		}
-		if response.ContentBlock.Type == "text" && response.ContentBlock.Text != nil {
-			if err := s.observeText(*response.ContentBlock.Text); err != nil {
-				return err
+		case "text":
+			if response.ContentBlock.Text != nil {
+				if err := s.observeText(*response.ContentBlock.Text); err != nil {
+					return err
+				}
 			}
+		default:
+			return fmt.Errorf("unsupported provider content block %q", response.ContentBlock.Type)
 		}
 	case "content_block_delta":
 		if response.Delta == nil {
@@ -207,8 +224,11 @@ func (s *HoneyAttestedRelay) ObserveClaudeResponse(response *dto.ClaudeResponse)
 		if response.Usage != nil && response.Usage.OutputTokens > 0 {
 			s.CompletionTokens = response.Usage.OutputTokens
 		}
+	case "content_block_stop", "ping":
 	case "message_stop":
 		s.MessageStop = true
+	default:
+		return fmt.Errorf("unsupported provider event %q", response.Type)
 	}
 	return nil
 }
