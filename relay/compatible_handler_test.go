@@ -48,3 +48,24 @@ func TestHoneyAttestedTerminalIsOneTypedEnvelopeFollowedByDone(t *testing.T) {
 	require.True(t, strings.HasSuffix(body, "data: [DONE]\n\n"))
 	require.True(t, relaycommon.HoneyAttestedTerminalWritten(c))
 }
+
+func TestHoneyAttestedProviderFailureWritesOneTerminalOnly(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	info := &relaycommon.RelayInfo{
+		HoneyAttestedRelay: &relaycommon.HoneyAttestedRelay{AttemptID: "attempt-provider-failure"},
+	}
+
+	require.NoError(t, finishHoneyAttestedFailure(c, info, "provider_stream_invalid"))
+	require.NoError(t, finishHoneyAttestedFailure(c, info, "provider_stream_invalid"))
+
+	body := recorder.Body.String()
+	require.Equal(t, 2, strings.Count(body, "data: "))
+	require.Contains(t, body, `"object":"newapi.attested_relay.error"`)
+	require.Contains(t, body, `"code":"provider_stream_invalid"`)
+	require.Contains(t, body, `"attempt_id":"attempt-provider-failure"`)
+	require.True(t, strings.HasSuffix(body, "data: [DONE]\n\n"))
+	require.True(t, relaycommon.HoneyAttestedTerminalWritten(c))
+}

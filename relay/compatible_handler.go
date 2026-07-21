@@ -221,6 +221,11 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 
 	usage, newApiErr := adaptor.DoResponse(c, httpResp, info)
 	if newApiErr != nil {
+		if info.HoneyAttestedRelay != nil {
+			if writeErr := finishHoneyAttestedFailure(c, info, "provider_stream_invalid"); writeErr != nil {
+				logger.LogError(c, "error writing attested relay provider failure: "+writeErr.Error())
+			}
+		}
 		// reset status code 重置状态码
 		service.ResetStatusCode(newApiErr, statusCodeMappingStr)
 		return newApiErr
@@ -282,6 +287,13 @@ func finishHoneyAttestedStream(c *gin.Context, envelope interface{}) error {
 		return writeErr
 	}
 	return nil
+}
+
+func finishHoneyAttestedFailure(c *gin.Context, info *relaycommon.RelayInfo, code string) error {
+	if relaycommon.HoneyAttestedTerminalWritten(c) {
+		return nil
+	}
+	return finishHoneyAttestedStream(c, relaycommon.NewHoneyAttestedErrorEnvelope(info, code))
 }
 
 func shouldUseResponsesGlobal(c *gin.Context, info *relaycommon.RelayInfo) bool {
