@@ -3,6 +3,7 @@ package common
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	basecommon "github.com/QuantumNous/new-api/common"
@@ -75,21 +76,46 @@ func TestHoneyAttestedRelaySeparatesSettlementFromProviderReportedUsage(t *testi
 	require.Equal(t, "v3="+honeySign(honeyTestSecret, mustHoneyMarshal(t, envelope.Receipt)), envelope.Signature)
 }
 
-func TestHoneyAttestedRelayAllowsUnknownProviderUsageButNotTextBeforeReasoning(t *testing.T) {
+func TestHoneyAttestedRelayBuffersProviderTextUntilReasoningIsVisible(t *testing.T) {
+	info := honeyTestInfo()
+	state, err := StartHoneyAttestedRelay(honeyTestContext(t, info), info, []byte(`{}`))
+	require.NoError(t, err)
+	require.NoError(t, state.ObserveClaudeResponse(&dto.ClaudeResponse{Type: "message_start", Message: &dto.ClaudeMediaMessage{Model: "claude-sonnet-4-6"}}))
+	first, second, reasoning := "first answer", "second answer", "visible reasoning"
+	require.NoError(t, state.ObserveClaudeResponse(&dto.ClaudeResponse{Type: "content_block_delta", Delta: &dto.ClaudeMediaMessage{Type: "text_delta", Text: &first}}))
+	require.True(t, state.CurrentTextBuffered())
+	require.Empty(t, state.TakeReleasedText())
+	require.NoError(t, state.ObserveClaudeResponse(&dto.ClaudeResponse{Type: "content_block_delta", Delta: &dto.ClaudeMediaMessage{Type: "thinking_delta", Thinking: &reasoning}}))
+	require.NoError(t, state.ObserveClaudeResponse(&dto.ClaudeResponse{Type: "content_block_delta", Delta: &dto.ClaudeMediaMessage{Type: "text_delta", Text: &second}}))
+	require.True(t, state.CurrentTextBuffered())
+	require.NoError(t, state.ObserveClaudeResponse(&dto.ClaudeResponse{Type: "message_delta"}))
+	require.Equal(t, []string{first, second}, state.TakeReleasedText())
+	require.NoError(t, state.ObserveClaudeResponse(&dto.ClaudeResponse{Type: "message_stop"}))
+	envelope, err := state.BuildSuccessEnvelope(info, HoneyNewAPISettlement{Amount: 1, Unit: "quota", Kind: "text_quota", Source: "newapi.final_settlement", BillingVersion: "newapi.text_quota.v1", MultiplierVersion: "newapi.runtime_price_data.v1"}, "request-123", "upstream-123")
+	require.NoError(t, err)
+	require.Equal(t, "unknown", envelope.Receipt.ProviderReported.Status)
+	require.Equal(t, len([]rune(first+second)), state.TextChars)
+}
+
+func TestHoneyAttestedRelayNeverReleasesBufferedTextWithoutReasoning(t *testing.T) {
 	info := honeyTestInfo()
 	state, err := StartHoneyAttestedRelay(honeyTestContext(t, info), info, []byte(`{}`))
 	require.NoError(t, err)
 	require.NoError(t, state.ObserveClaudeResponse(&dto.ClaudeResponse{Type: "message_start", Message: &dto.ClaudeMediaMessage{Model: "claude-sonnet-4-6"}}))
 	text := "must not escape"
-	require.ErrorContains(t, state.ObserveClaudeResponse(&dto.ClaudeResponse{Type: "content_block_delta", Delta: &dto.ClaudeMediaMessage{Type: "text_delta", Text: &text}}), "before visible reasoning")
+	require.NoError(t, state.ObserveClaudeResponse(&dto.ClaudeResponse{Type: "content_block_delta", Delta: &dto.ClaudeMediaMessage{Type: "text_delta", Text: &text}}))
+	require.ErrorContains(t, state.ObserveClaudeResponse(&dto.ClaudeResponse{Type: "message_stop"}), "without visible reasoning")
+	require.Empty(t, state.TakeReleasedText())
+}
 
-	info = honeyTestInfo()
-	state, err = StartHoneyAttestedRelay(honeyTestContext(t, info), info, []byte(`{}`))
+func TestHoneyAttestedRelayBoundsTextBufferedBeforeReasoning(t *testing.T) {
+	info := honeyTestInfo()
+	state, err := StartHoneyAttestedRelay(honeyTestContext(t, info), info, []byte(`{}`))
 	require.NoError(t, err)
-	completeHoneyState(t, state, false)
-	envelope, err := state.BuildSuccessEnvelope(info, HoneyNewAPISettlement{Amount: 1, Unit: "quota", Kind: "text_quota", Source: "newapi.final_settlement", BillingVersion: "newapi.text_quota.v1", MultiplierVersion: "newapi.runtime_price_data.v1"}, "request-123", "upstream-123")
-	require.NoError(t, err)
-	require.Equal(t, "unknown", envelope.Receipt.ProviderReported.Status)
+	require.NoError(t, state.ObserveClaudeResponse(&dto.ClaudeResponse{Type: "message_start", Message: &dto.ClaudeMediaMessage{Model: "claude-sonnet-4-6"}}))
+	text := strings.Repeat("x", maxHoneyBufferedTextBytes+1)
+	require.ErrorContains(t, state.ObserveClaudeResponse(&dto.ClaudeResponse{Type: "content_block_delta", Delta: &dto.ClaudeMediaMessage{Type: "text_delta", Text: &text}}), "exceeded the relay buffer")
+	require.Empty(t, state.TakeReleasedText())
 }
 
 func TestHoneyAttestedRelayRejectsReasoningAfterTextAndRequiresMessageStop(t *testing.T) {
@@ -148,10 +174,11 @@ func TestHoneyAttestedRelayCountsLeadingReasoningWhitespaceWithoutTreatingItAsVi
 	require.NoError(t, state.ObserveClaudeResponse(&dto.ClaudeResponse{Type: "message_start", Message: &dto.ClaudeMediaMessage{Model: "claude-sonnet-4-6"}}))
 	whitespace, visible, text := "  ", "reasoning", "answer"
 	require.NoError(t, state.ObserveClaudeResponse(&dto.ClaudeResponse{Type: "content_block_delta", Delta: &dto.ClaudeMediaMessage{Type: "thinking_delta", Thinking: &whitespace}}))
-	require.ErrorContains(t, state.ObserveClaudeResponse(&dto.ClaudeResponse{Type: "content_block_delta", Delta: &dto.ClaudeMediaMessage{Type: "text_delta", Text: &text}}), "before visible reasoning")
-	require.NoError(t, state.ObserveClaudeResponse(&dto.ClaudeResponse{Type: "content_block_delta", Delta: &dto.ClaudeMediaMessage{Type: "thinking_delta", Thinking: &visible}}))
 	require.NoError(t, state.ObserveClaudeResponse(&dto.ClaudeResponse{Type: "content_block_delta", Delta: &dto.ClaudeMediaMessage{Type: "text_delta", Text: &text}}))
+	require.True(t, state.CurrentTextBuffered())
+	require.NoError(t, state.ObserveClaudeResponse(&dto.ClaudeResponse{Type: "content_block_delta", Delta: &dto.ClaudeMediaMessage{Type: "thinking_delta", Thinking: &visible}}))
 	require.NoError(t, state.ObserveClaudeResponse(&dto.ClaudeResponse{Type: "message_stop"}))
+	require.Equal(t, []string{text}, state.TakeReleasedText())
 	envelope, err := state.BuildSuccessEnvelope(info, HoneyNewAPISettlement{Amount: 1, Unit: "quota", Kind: "text_quota", Source: "newapi.final_settlement", BillingVersion: "v1", MultiplierVersion: "v1"}, "request-123", "upstream-123")
 	require.NoError(t, err)
 	require.Equal(t, len([]rune(whitespace+visible)), envelope.Receipt.Reasoning.Chars)

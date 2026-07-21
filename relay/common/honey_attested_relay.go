@@ -17,10 +17,12 @@ import (
 )
 
 const (
-	HoneyAttestedRelaySchema = "newapi.attested_relay.v3"
-	honeyAttestationVersion  = "2"
-	honeyAttestationSecret   = "HONEY_ATTESTATION_SECRET"
-	honeyTerminalWrittenKey  = "honey_attested_terminal_written"
+	HoneyAttestedRelaySchema   = "newapi.attested_relay.v3"
+	maxHoneyBufferedTextBytes  = 256 << 10
+	maxHoneyBufferedTextDeltas = 4096
+	honeyAttestationVersion    = "2"
+	honeyAttestationSecret     = "HONEY_ATTESTATION_SECRET"
+	honeyTerminalWrittenKey    = "honey_attested_terminal_written"
 )
 
 func MarkHoneyAttestedTerminalWritten(c *gin.Context) {
@@ -106,23 +108,27 @@ type HoneyAttestedErrorEnvelope struct {
 }
 
 type HoneyAttestedRelay struct {
-	PolicyVersion      string
-	AttemptID          string
-	LogicalModel       string
-	SelectedModel      string
-	UpstreamModel      string
-	RouteFingerprint   string
-	CompiledBodySHA256 string
-	ResponseModel      string
-	ReasoningChars     int
-	ReasoningVisible   bool
-	TextChars          int
-	PromptTokens       int
-	CompletionTokens   int
-	ReasoningTokens    int
-	MessageStarted     bool
-	MessageStop        bool
-	TextStarted        bool
+	PolicyVersion       string
+	AttemptID           string
+	LogicalModel        string
+	SelectedModel       string
+	UpstreamModel       string
+	RouteFingerprint    string
+	CompiledBodySHA256  string
+	ResponseModel       string
+	ReasoningChars      int
+	ReasoningVisible    bool
+	TextChars           int
+	PromptTokens        int
+	CompletionTokens    int
+	ReasoningTokens     int
+	MessageStarted      bool
+	MessageStop         bool
+	TextStarted         bool
+	bufferedText        []string
+	bufferedTextBytes   int
+	releasedText        []string
+	currentTextBuffered bool
 }
 
 func IsHoneyAttestationRequested(c *gin.Context) bool {
@@ -176,6 +182,7 @@ func (s *HoneyAttestedRelay) ObserveClaudeResponse(response *dto.ClaudeResponse)
 	if s.MessageStop {
 		return errors.New("provider emitted an event after message_stop")
 	}
+	s.currentTextBuffered = false
 	if response.Type != "message_start" && response.Type != "ping" && !s.MessageStarted {
 		return errors.New("provider emitted content before message_start")
 	}
@@ -242,6 +249,9 @@ func (s *HoneyAttestedRelay) ObserveClaudeResponse(response *dto.ClaudeResponse)
 		if response.Usage != nil && response.Usage.OutputTokens > 0 {
 			s.CompletionTokens = response.Usage.OutputTokens
 		}
+		if err := s.releaseBufferedText(); err != nil {
+			return err
+		}
 	case "content_block_stop":
 	case "ping":
 		if response.Id != "" || response.Role != "" || len(response.Content) != 0 ||
@@ -251,6 +261,9 @@ func (s *HoneyAttestedRelay) ObserveClaudeResponse(response *dto.ClaudeResponse)
 			return errors.New("provider ping contained semantic fields")
 		}
 	case "message_stop":
+		if err := s.releaseBufferedText(); err != nil {
+			return err
+		}
 		s.MessageStop = true
 	default:
 		return fmt.Errorf("unsupported provider event %q", response.Type)
@@ -260,14 +273,69 @@ func (s *HoneyAttestedRelay) ObserveClaudeResponse(response *dto.ClaudeResponse)
 
 func (s *HoneyAttestedRelay) observeText(value string) error {
 	text := strings.TrimSpace(value)
+	if !s.ReasoningVisible || len(s.bufferedText) > 0 {
+		s.currentTextBuffered = true
+		if value == "" {
+			return nil
+		}
+		if len(s.bufferedText) >= maxHoneyBufferedTextDeltas ||
+			s.bufferedTextBytes+len(value) > maxHoneyBufferedTextBytes {
+			return errors.New("provider text before reasoning exceeded the relay buffer")
+		}
+		s.bufferedText = append(s.bufferedText, value)
+		s.bufferedTextBytes += len(value)
+		return nil
+	}
 	if text == "" {
 		return nil
 	}
-	if !s.ReasoningVisible {
-		return errors.New("provider emitted text before visible reasoning")
-	}
 	s.TextStarted = true
 	s.TextChars += len([]rune(text))
+	return nil
+}
+
+// CurrentTextBuffered reports whether the current provider text event was held
+// back from the client. Once an upstream emits text before visible reasoning,
+// every later text delta is buffered as well so the original text order can be
+// preserved when the lane is released.
+func (s *HoneyAttestedRelay) CurrentTextBuffered() bool {
+	return s != nil && s.currentTextBuffered
+}
+
+// TakeReleasedText returns provider text made eligible for emission by a
+// message_delta or message_stop after visible reasoning. The relay emits these
+// deltas before forwarding that terminal provider event. If reasoning never
+// becomes visible, releaseBufferedText fails closed and no buffered text is
+// exposed.
+func (s *HoneyAttestedRelay) TakeReleasedText() []string {
+	if s == nil || len(s.releasedText) == 0 {
+		return nil
+	}
+	released := append([]string(nil), s.releasedText...)
+	s.releasedText = nil
+	return released
+}
+
+func (s *HoneyAttestedRelay) releaseBufferedText() error {
+	if len(s.bufferedText) == 0 {
+		return nil
+	}
+	if !s.ReasoningVisible {
+		return errors.New("provider completed without visible reasoning")
+	}
+	for _, value := range s.bufferedText {
+		text := strings.TrimSpace(value)
+		if text == "" {
+			continue
+		}
+		s.TextChars += len([]rune(text))
+		s.releasedText = append(s.releasedText, value)
+	}
+	s.bufferedText = nil
+	s.bufferedTextBytes = 0
+	if len(s.releasedText) > 0 {
+		s.TextStarted = true
+	}
 	return nil
 }
 

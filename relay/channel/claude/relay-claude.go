@@ -99,6 +99,7 @@ func HandleStreamResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 	if claudeResponse.Delta != nil && claudeResponse.Delta.StopReason != nil {
 		maybeMarkClaudeRefusal(c, *claudeResponse.Delta.StopReason)
 	}
+	var releasedText []string
 	if info.HoneyAttestedRelay != nil {
 		if observeErr := info.HoneyAttestedRelay.ObserveClaudeResponse(&claudeResponse); observeErr != nil {
 			return types.NewError(observeErr, types.ErrorCodeBadResponseBody, types.ErrOptionWithSkipRetry())
@@ -108,6 +109,10 @@ func HandleStreamResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 		// suppress that frame for the attested contract so Honey never displays or
 		// counts a provider signature as reasoning content.
 		if claudeResponse.Delta != nil && claudeResponse.Delta.Type == "signature_delta" {
+			return nil
+		}
+		releasedText = info.HoneyAttestedRelay.TakeReleasedText()
+		if info.HoneyAttestedRelay.CurrentTextBuffered() {
 			return nil
 		}
 	}
@@ -128,6 +133,27 @@ func HandleStreamResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 		}
 		helper.ClaudeChunkData(c, claudeResponse, data)
 	} else if info.RelayFormat == types.RelayFormatOpenAI {
+		for _, text := range releasedText {
+			buffered := text
+			bufferedProviderResponse := &dto.ClaudeResponse{
+				Type: "content_block_delta",
+				Delta: &dto.ClaudeMediaMessage{
+					Type: "text_delta",
+					Text: &buffered,
+				},
+			}
+			bufferedResponse := StreamResponseClaude2OpenAI(bufferedProviderResponse)
+			if !FormatClaudeResponseInfo(bufferedProviderResponse, bufferedResponse, claudeInfo) {
+				return types.NewError(
+					io.ErrUnexpectedEOF,
+					types.ErrorCodeBadResponseBody,
+					types.ErrOptionWithSkipRetry(),
+				)
+			}
+			if err = helper.ObjectData(c, bufferedResponse); err != nil {
+				return types.NewError(err, types.ErrorCodeBadResponseBody, types.ErrOptionWithSkipRetry())
+			}
+		}
 		response := StreamResponseClaude2OpenAI(&claudeResponse)
 
 		if !FormatClaudeResponseInfo(&claudeResponse, response, claudeInfo) {

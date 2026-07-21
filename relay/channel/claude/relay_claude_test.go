@@ -38,6 +38,50 @@ func TestAttestedClaudeStreamSuppressesSyntheticSignatureReasoning(t *testing.T)
 	require.Zero(t, info.HoneyAttestedRelay.ReasoningChars)
 }
 
+func TestAttestedClaudeStreamEmitsBufferedTextAfterVisibleReasoning(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	info := &relaycommon.RelayInfo{
+		RelayFormat: types.RelayFormatOpenAI,
+		HoneyAttestedRelay: &relaycommon.HoneyAttestedRelay{
+			MessageStarted: true,
+		},
+	}
+	claudeInfo := &ClaudeResponseInfo{Usage: &dto.Usage{}}
+
+	require.Nil(t, HandleStreamResponseData(
+		c,
+		info,
+		claudeInfo,
+		`{"type":"content_block_delta","delta":{"type":"text_delta","text":"buffered answer"}}`,
+	))
+	require.Empty(t, recorder.Body.String())
+
+	require.Nil(t, HandleStreamResponseData(
+		c,
+		info,
+		claudeInfo,
+		`{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"visible reasoning"}}`,
+	))
+	reasoningOutput := recorder.Body.String()
+	require.Contains(t, reasoningOutput, "visible reasoning")
+	require.NotContains(t, reasoningOutput, "buffered answer")
+
+	require.Nil(t, HandleStreamResponseData(
+		c,
+		info,
+		claudeInfo,
+		`{"type":"message_delta","delta":{"stop_reason":"end_turn"}}`,
+	))
+	output := recorder.Body.String()
+	reasoningIndex := strings.Index(output, "visible reasoning")
+	textIndex := strings.Index(output, "buffered answer")
+	require.GreaterOrEqual(t, reasoningIndex, 0)
+	require.Greater(t, textIndex, reasoningIndex)
+	require.Equal(t, len([]rune("buffered answer")), info.HoneyAttestedRelay.TextChars)
+}
+
 func commonPointer[T any](value T) *T {
 	return &value
 }
