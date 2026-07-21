@@ -71,6 +71,15 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 	adaptor.Init(info)
 
 	passThroughGlobal := model_setting.GetGlobalSettings().PassThroughRequestEnabled
+	if relaycommon.IsHoneyAttestationRequested(c) &&
+		(passThroughGlobal || info.ChannelSetting.PassThroughBodyEnabled) {
+		return types.NewErrorWithStatusCode(
+			fmt.Errorf("attested relay forbids pass-through request bodies"),
+			types.ErrorCodeInvalidRequest,
+			http.StatusBadRequest,
+			types.ErrOptionWithSkipRetry(),
+		)
+	}
 	if info.RelayMode == relayconstant.RelayModeChatCompletions &&
 		!passThroughGlobal &&
 		!info.ChannelSetting.PassThroughBodyEnabled &&
@@ -173,6 +182,12 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 			}
 		}
 
+		if relaycommon.IsHoneyAttestationRequested(c) {
+			if _, err = relaycommon.StartHoneyAttestedRelay(c, info, jsonData); err != nil {
+				return types.NewErrorWithStatusCode(err, types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+			}
+		}
+
 		logger.LogDebug(c, "text request body: %s", jsonData)
 
 		body, size, closer, err := relaycommon.NewOutboundJSONBody(jsonData)
@@ -215,9 +230,29 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 	var containsAudioRatios = ratio_setting.ContainsAudioRatio(info.OriginModelName) || ratio_setting.ContainsAudioCompletionRatio(info.OriginModelName)
 
 	if containAudioTokens && containsAudioRatios {
+		if info.HoneyAttestedRelay != nil {
+			return types.NewError(fmt.Errorf("attested relay does not support audio settlement"), types.ErrorCodeBadResponseBody, types.ErrOptionWithSkipRetry())
+		}
 		service.PostAudioConsumeQuota(c, info, usage.(*dto.Usage), "")
 	} else {
-		service.PostTextConsumeQuota(c, info, usage.(*dto.Usage), nil)
+		settlement := service.PostTextConsumeQuota(c, info, usage.(*dto.Usage), nil)
+		if info.HoneyAttestedRelay != nil {
+			envelope, receiptErr := info.HoneyAttestedRelay.BuildSuccessEnvelope(
+				info,
+				settlement,
+				c.GetString(common.RequestIdKey),
+				c.GetString(common.UpstreamRequestIdKey),
+			)
+			if receiptErr != nil {
+				_ = helper.ObjectData(c, relaycommon.NewHoneyAttestedErrorEnvelope(info, "attestation_failed"))
+				helper.Done(c)
+				return types.NewError(receiptErr, types.ErrorCodeBadResponseBody, types.ErrOptionWithSkipRetry())
+			}
+			if writeErr := helper.ObjectData(c, envelope); writeErr != nil {
+				return types.NewError(writeErr, types.ErrorCodeBadResponseBody, types.ErrOptionWithSkipRetry())
+			}
+			helper.Done(c)
+		}
 	}
 	return nil
 }

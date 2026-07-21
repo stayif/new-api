@@ -163,6 +163,10 @@ type RelayInfo struct {
 
 	PriceData types.PriceData
 
+	// HoneyAttestedRelay is populated only for Honey's signed, pinned Claude
+	// relay contract. It never changes generic relay behavior.
+	HoneyAttestedRelay *HoneyAttestedRelay
+
 	// QuotaClamp is set (non-nil) when a quota conversion saturated at the
 	// int32 bound (or NaN fallback) while computing this request's charge.
 	// It is surfaced onto the consume/task log's admin_info for auditing.

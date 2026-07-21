@@ -344,7 +344,7 @@ func usageSemanticFromUsage(relayInfo *relaycommon.RelayInfo, usage *dto.Usage) 
 	return "openai"
 }
 
-func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage *dto.Usage, extraContent []string) {
+func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage *dto.Usage, extraContent []string) relaycommon.HoneyNewAPISettlement {
 	originUsage := usage
 	billingUsage := effectiveBillingUsage(usage)
 	if usage == nil {
@@ -505,4 +505,16 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 	gopool.Go(func() {
 		perfmetrics.RecordRelaySample(relayInfo, true, int64(summary.CompletionTokens))
 	})
+	return relaycommon.HoneyNewAPISettlement{
+		Amount:            int64(summary.Quota),
+		Unit:              "quota",
+		Kind:              "text_quota",
+		Source:            "newapi.final_settlement",
+		BillingVersion:    "newapi.text_quota.v1",
+		MultiplierVersion: "newapi.runtime_price_data.v1",
+		ModelRatio:        summary.ModelRatio,
+		CompletionRatio:   summary.CompletionRatio,
+		GroupRatio:        summary.GroupRatio,
+		ModelPrice:        summary.ModelPrice,
+	}
 }
