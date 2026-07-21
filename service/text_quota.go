@@ -391,14 +391,36 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 	if summary.TotalTokens == 0 {
 		extraContent = append(extraContent, "上游没有返回计费信息，无法扣费（可能是上游超时）")
 		logger.LogError(ctx, fmt.Sprintf("total tokens is 0, cannot consume quota, userId %d, channelId %d, tokenId %d, model %s， pre-consumed quota %d", relayInfo.UserId, relayInfo.ChannelId, relayInfo.TokenId, summary.ModelName, relayInfo.FinalPreConsumedQuota))
-	} else {
-		model.UpdateUserUsedQuotaAndRequestCount(relayInfo.UserId, summary.Quota)
-		model.UpdateChannelUsedQuota(relayInfo.ChannelId, summary.Quota)
+	}
+
+	settlement := relaycommon.HoneyNewAPISettlement{
+		Amount:            int64(summary.Quota),
+		Unit:              "quota",
+		Kind:              "text_quota",
+		Source:            "newapi.final_settlement",
+		BillingVersion:    "newapi.text_quota.v1",
+		MultiplierVersion: "newapi.runtime_price_data.v1",
+		ModelRatio:        summary.ModelRatio,
+		CompletionRatio:   summary.CompletionRatio,
+		GroupRatio:        summary.GroupRatio,
+		ModelPrice:        summary.ModelPrice,
 	}
 
 	settlementErr := SettleBilling(ctx, relayInfo, summary.Quota)
 	if settlementErr != nil {
 		logger.LogError(ctx, "error settling billing: "+settlementErr.Error())
+		// The attested Honey path must not publish accounting projections or a
+		// consume log when final NewAPI settlement failed. The caller will emit a
+		// terminal settlement_failed envelope and will never sign this settlement.
+		// Preserve the legacy best-effort behavior for all non-attested callers.
+		if relayInfo.HoneyAttestedRelay != nil {
+			return settlement, settlementErr
+		}
+	}
+
+	if summary.TotalTokens != 0 {
+		model.UpdateUserUsedQuotaAndRequestCount(relayInfo.UserId, summary.Quota)
+		model.UpdateChannelUsedQuota(relayInfo.ChannelId, summary.Quota)
 	}
 
 	logModel := summary.ModelName
@@ -506,16 +528,5 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 	gopool.Go(func() {
 		perfmetrics.RecordRelaySample(relayInfo, true, int64(summary.CompletionTokens))
 	})
-	return relaycommon.HoneyNewAPISettlement{
-		Amount:            int64(summary.Quota),
-		Unit:              "quota",
-		Kind:              "text_quota",
-		Source:            "newapi.final_settlement",
-		BillingVersion:    "newapi.text_quota.v1",
-		MultiplierVersion: "newapi.runtime_price_data.v1",
-		ModelRatio:        summary.ModelRatio,
-		CompletionRatio:   summary.CompletionRatio,
-		GroupRatio:        summary.GroupRatio,
-		ModelPrice:        summary.ModelPrice,
-	}, settlementErr
+	return settlement, settlementErr
 }
