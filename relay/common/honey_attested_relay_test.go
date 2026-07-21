@@ -155,6 +155,21 @@ func TestHoneyAttestedRelayCountsLeadingReasoningWhitespaceWithoutTreatingItAsVi
 	require.Equal(t, len([]rune(whitespace+visible)), envelope.Receipt.Reasoning.Chars)
 }
 
+func TestHoneyAttestedRelayAcceptsSignatureMetadataWithoutCountingItAsReasoning(t *testing.T) {
+	info := honeyTestInfo()
+	state, err := StartHoneyAttestedRelay(honeyTestContext(t, info), info, []byte(`{}`))
+	require.NoError(t, err)
+	require.NoError(t, state.ObserveClaudeResponse(&dto.ClaudeResponse{Type: "message_start", Message: &dto.ClaudeMediaMessage{Model: "claude-sonnet-4-6"}}))
+	visible, signature, text := "reasoning", "provider-signature", "answer"
+	require.NoError(t, state.ObserveClaudeResponse(&dto.ClaudeResponse{Type: "content_block_delta", Delta: &dto.ClaudeMediaMessage{Type: "thinking_delta", Thinking: &visible}}))
+	require.NoError(t, state.ObserveClaudeResponse(&dto.ClaudeResponse{Type: "content_block_delta", Delta: &dto.ClaudeMediaMessage{Type: "signature_delta", Signature: signature}}))
+	require.NoError(t, state.ObserveClaudeResponse(&dto.ClaudeResponse{Type: "content_block_delta", Delta: &dto.ClaudeMediaMessage{Type: "text_delta", Text: &text}}))
+	require.NoError(t, state.ObserveClaudeResponse(&dto.ClaudeResponse{Type: "message_stop"}))
+	envelope, err := state.BuildSuccessEnvelope(info, HoneyNewAPISettlement{Amount: 1, Unit: "quota", Kind: "text_quota", Source: "newapi.final_settlement", BillingVersion: "v1", MultiplierVersion: "v1"}, "request-123", "upstream-123")
+	require.NoError(t, err)
+	require.Equal(t, len([]rune(visible)), envelope.Receipt.Reasoning.Chars)
+}
+
 func mustHoneyMarshal(t *testing.T, value any) []byte {
 	t.Helper()
 	payload, err := basecommon.Marshal(value)

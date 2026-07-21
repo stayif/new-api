@@ -243,7 +243,12 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 				helper.Done(c)
 				return types.NewError(receiptErr, types.ErrorCodeBadResponseBody, types.ErrOptionWithSkipRetry())
 			}
-			settlement := service.PostTextConsumeQuota(c, info, usage.(*dto.Usage), nil)
+			settlement, settlementErr := service.PostTextConsumeQuota(c, info, usage.(*dto.Usage), nil)
+			if settlementErr != nil {
+				_ = helper.ObjectData(c, relaycommon.NewHoneyAttestedErrorEnvelope(info, "settlement_failed"))
+				helper.Done(c)
+				return types.NewError(settlementErr, types.ErrorCodeBadResponseBody, types.ErrOptionWithSkipRetry())
+			}
 			envelope, receiptErr := info.HoneyAttestedRelay.BuildSuccessEnvelope(
 				info,
 				settlement,

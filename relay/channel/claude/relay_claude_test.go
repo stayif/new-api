@@ -1,14 +1,42 @@
 package claude
 
 import (
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/QuantumNous/new-api/dto"
+	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/service/relayconvert"
+	"github.com/QuantumNous/new-api/types"
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestAttestedClaudeStreamSuppressesSyntheticSignatureReasoning(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	info := &relaycommon.RelayInfo{
+		RelayFormat: types.RelayFormatOpenAI,
+		HoneyAttestedRelay: &relaycommon.HoneyAttestedRelay{
+			MessageStarted: true,
+		},
+	}
+	claudeInfo := &ClaudeResponseInfo{Usage: &dto.Usage{}}
+
+	err := HandleStreamResponseData(
+		c,
+		info,
+		claudeInfo,
+		`{"type":"content_block_delta","delta":{"type":"signature_delta","signature":"provider-signature"}}`,
+	)
+
+	require.Nil(t, err)
+	require.Empty(t, recorder.Body.String())
+	require.Zero(t, info.HoneyAttestedRelay.ReasoningChars)
+}
 
 func commonPointer[T any](value T) *T {
 	return &value

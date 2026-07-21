@@ -103,6 +103,13 @@ func HandleStreamResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 		if observeErr := info.HoneyAttestedRelay.ObserveClaudeResponse(&claudeResponse); observeErr != nil {
 			return types.NewError(observeErr, types.ErrorCodeBadResponseBody, types.ErrOptionWithSkipRetry())
 		}
+		// Anthropic's signature_delta is integrity metadata, not visible reasoning.
+		// The generic compatibility converter represents it as a synthetic newline;
+		// suppress that frame for the attested contract so Honey never displays or
+		// counts a provider signature as reasoning content.
+		if claudeResponse.Delta != nil && claudeResponse.Delta.Type == "signature_delta" {
+			return nil
+		}
 	}
 	if info.RelayFormat == types.RelayFormatClaude {
 		FormatClaudeResponseInfo(&claudeResponse, nil, claudeInfo)
