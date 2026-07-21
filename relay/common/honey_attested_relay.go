@@ -12,6 +12,7 @@ import (
 
 	basecommon "github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/dto"
+	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
 )
 
@@ -124,7 +125,7 @@ func StartHoneyAttestedRelay(c *gin.Context, info *RelayInfo, compiledBody []byt
 	if c.GetHeader("X-NewAPI-Attestation-Version") != honeyAttestationVersion {
 		return nil, errors.New("unsupported attestation version")
 	}
-	if !info.IsStream || !info.ShouldIncludeUsage || info.ChannelType != 14 {
+	if !info.IsStream || !info.ShouldIncludeUsage || info.ChannelType != 14 || info.RelayFormat != types.RelayFormatOpenAI {
 		return nil, errors.New("attested relay requires a streaming Claude route with usage")
 	}
 	if info.ChannelSetting.PassThroughBodyEnabled || info.ChannelSetting.ThinkingToContent {
@@ -218,6 +219,11 @@ func (s *HoneyAttestedRelay) ObserveClaudeResponse(response *dto.ClaudeResponse)
 				}
 			}
 		case "signature_delta":
+			if response.Delta.Signature == "" || response.Delta.Text != nil ||
+				response.Delta.Thinking != nil || response.Delta.PartialJson != nil ||
+				response.Delta.Content != nil || response.Delta.Input != nil {
+				return errors.New("provider signature delta is malformed")
+			}
 		default:
 			return fmt.Errorf("unsupported provider delta %q", response.Delta.Type)
 		}

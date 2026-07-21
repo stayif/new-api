@@ -7,6 +7,7 @@ import (
 
 	basecommon "github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/dto"
+	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
@@ -18,6 +19,7 @@ func honeyTestInfo() *RelayInfo {
 		IsStream:           true,
 		ShouldIncludeUsage: true,
 		OriginModelName:    "honey-claude-sonnet-4-6",
+		RelayFormat:        types.RelayFormatOpenAI,
 		ChannelMeta: &ChannelMeta{
 			ChannelId: 15, ChannelType: 14, ChannelBaseUrl: "https://provider.example",
 			UpstreamModelName: "claude-sonnet-4-6",
@@ -162,6 +164,7 @@ func TestHoneyAttestedRelayAcceptsSignatureMetadataWithoutCountingItAsReasoning(
 	require.NoError(t, state.ObserveClaudeResponse(&dto.ClaudeResponse{Type: "message_start", Message: &dto.ClaudeMediaMessage{Model: "claude-sonnet-4-6"}}))
 	visible, signature, text := "reasoning", "provider-signature", "answer"
 	require.NoError(t, state.ObserveClaudeResponse(&dto.ClaudeResponse{Type: "content_block_delta", Delta: &dto.ClaudeMediaMessage{Type: "thinking_delta", Thinking: &visible}}))
+	require.ErrorContains(t, state.ObserveClaudeResponse(&dto.ClaudeResponse{Type: "content_block_delta", Delta: &dto.ClaudeMediaMessage{Type: "signature_delta", Signature: signature, Thinking: &visible}}), "malformed")
 	require.NoError(t, state.ObserveClaudeResponse(&dto.ClaudeResponse{Type: "content_block_delta", Delta: &dto.ClaudeMediaMessage{Type: "signature_delta", Signature: signature}}))
 	require.NoError(t, state.ObserveClaudeResponse(&dto.ClaudeResponse{Type: "content_block_delta", Delta: &dto.ClaudeMediaMessage{Type: "text_delta", Text: &text}}))
 	require.NoError(t, state.ObserveClaudeResponse(&dto.ClaudeResponse{Type: "message_stop"}))
