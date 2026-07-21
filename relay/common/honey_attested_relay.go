@@ -224,7 +224,14 @@ func (s *HoneyAttestedRelay) ObserveClaudeResponse(response *dto.ClaudeResponse)
 		if response.Usage != nil && response.Usage.OutputTokens > 0 {
 			s.CompletionTokens = response.Usage.OutputTokens
 		}
-	case "content_block_stop", "ping":
+	case "content_block_stop":
+	case "ping":
+		if response.Id != "" || response.Role != "" || len(response.Content) != 0 ||
+			response.Completion != "" || response.StopReason != "" || response.Model != "" ||
+			response.Error != nil || response.Usage != nil || response.Index != nil ||
+			response.ContentBlock != nil || response.Delta != nil || response.Message != nil {
+			return errors.New("provider ping contained semantic fields")
+		}
 	case "message_stop":
 		s.MessageStop = true
 	default:

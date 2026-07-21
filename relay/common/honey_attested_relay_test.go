@@ -109,6 +109,8 @@ func TestHoneyAttestedRelayRejectsUnknownAndPostTerminalEvents(t *testing.T) {
 	require.NoError(t, err)
 	require.ErrorContains(t, state.ObserveClaudeResponse(&dto.ClaudeResponse{Type: "content_block_stop"}), "before message_start")
 	require.NoError(t, state.ObserveClaudeResponse(&dto.ClaudeResponse{Type: "ping"}))
+	pingText := "hidden content"
+	require.ErrorContains(t, state.ObserveClaudeResponse(&dto.ClaudeResponse{Type: "ping", Delta: &dto.ClaudeMediaMessage{Text: &pingText}}), "semantic fields")
 	require.NoError(t, state.ObserveClaudeResponse(&dto.ClaudeResponse{Type: "message_start", Message: &dto.ClaudeMediaMessage{Model: "claude-sonnet-4-6"}}))
 	require.ErrorContains(t, state.ObserveClaudeResponse(&dto.ClaudeResponse{Type: "content_block_start", ContentBlock: &dto.ClaudeMediaMessage{Type: "tool_use"}}), "unsupported provider content block")
 	require.ErrorContains(t, state.ObserveClaudeResponse(&dto.ClaudeResponse{Type: "unexpected"}), "unsupported provider event")
