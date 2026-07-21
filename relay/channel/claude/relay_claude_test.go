@@ -80,6 +80,18 @@ func TestAttestedClaudeStreamEmitsBufferedTextAfterVisibleReasoning(t *testing.T
 	require.GreaterOrEqual(t, reasoningIndex, 0)
 	require.Greater(t, textIndex, reasoningIndex)
 	require.Equal(t, len([]rune("buffered answer")), info.HoneyAttestedRelay.TextChars)
+
+	beforeLateText := recorder.Body.String()
+	lateError := HandleStreamResponseData(
+		c,
+		info,
+		claudeInfo,
+		`{"type":"content_block_delta","delta":{"type":"text_delta","text":"late answer"}}`,
+	)
+	require.NotNil(t, lateError)
+	require.Contains(t, lateError.Error(), "after message_delta")
+	require.Equal(t, beforeLateText, recorder.Body.String())
+	require.NotContains(t, recorder.Body.String(), "late answer")
 }
 
 func commonPointer[T any](value T) *T {

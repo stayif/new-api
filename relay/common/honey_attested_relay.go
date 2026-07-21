@@ -123,12 +123,14 @@ type HoneyAttestedRelay struct {
 	CompletionTokens    int
 	ReasoningTokens     int
 	MessageStarted      bool
+	MessageDeltaSeen    bool
 	MessageStop         bool
 	TextStarted         bool
 	bufferedText        []string
 	bufferedTextBytes   int
 	releasedText        []string
 	currentTextBuffered bool
+	protocolInvalid     bool
 }
 
 func IsHoneyAttestationRequested(c *gin.Context) bool {
@@ -175,12 +177,23 @@ func StartHoneyAttestedRelay(c *gin.Context, info *RelayInfo, compiledBody []byt
 	return state, nil
 }
 
-func (s *HoneyAttestedRelay) ObserveClaudeResponse(response *dto.ClaudeResponse) error {
-	if s == nil || response == nil {
+func (s *HoneyAttestedRelay) ObserveClaudeResponse(response *dto.ClaudeResponse) (err error) {
+	if s == nil {
+		return errors.New("attested relay received an empty provider event")
+	}
+	defer func() {
+		if err != nil {
+			s.protocolInvalid = true
+		}
+	}()
+	if response == nil {
 		return errors.New("attested relay received an empty provider event")
 	}
 	if s.MessageStop {
 		return errors.New("provider emitted an event after message_stop")
+	}
+	if s.MessageDeltaSeen && response.Type != "message_stop" && response.Type != "ping" {
+		return errors.New("provider emitted an event after message_delta")
 	}
 	s.currentTextBuffered = false
 	if response.Type != "message_start" && response.Type != "ping" && !s.MessageStarted {
@@ -246,6 +259,7 @@ func (s *HoneyAttestedRelay) ObserveClaudeResponse(response *dto.ClaudeResponse)
 			return fmt.Errorf("unsupported provider delta %q", response.Delta.Type)
 		}
 	case "message_delta":
+		s.MessageDeltaSeen = true
 		if response.Usage != nil && response.Usage.OutputTokens > 0 {
 			s.CompletionTokens = response.Usage.OutputTokens
 		}
@@ -325,10 +339,9 @@ func (s *HoneyAttestedRelay) releaseBufferedText() error {
 	}
 	for _, value := range s.bufferedText {
 		text := strings.TrimSpace(value)
-		if text == "" {
-			continue
+		if text != "" {
+			s.TextChars += len([]rune(text))
 		}
-		s.TextChars += len([]rune(text))
 		s.releasedText = append(s.releasedText, value)
 	}
 	s.bufferedText = nil
@@ -353,7 +366,7 @@ func (s *HoneyAttestedRelay) observeReasoning(value string) error {
 func (s *HoneyAttestedRelay) ValidateSuccessPrerequisites(info *RelayInfo, newAPIRequestID, executionRequestID string) error {
 	if s == nil || info == nil || !s.MessageStarted || !s.MessageStop || s.ResponseModel == "" ||
 		!s.ReasoningVisible || s.ReasoningChars == 0 || s.TextChars == 0 ||
-		newAPIRequestID == "" || executionRequestID == "" {
+		s.protocolInvalid || newAPIRequestID == "" || executionRequestID == "" {
 		return errors.New("attested relay terminal contract is incomplete")
 	}
 	if len(strings.TrimSpace(os.Getenv(honeyAttestationSecret))) < 32 {

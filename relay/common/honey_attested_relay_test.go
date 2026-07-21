@@ -108,6 +108,16 @@ func TestHoneyAttestedRelayNeverReleasesBufferedTextWithoutReasoning(t *testing.
 	require.Empty(t, state.TakeReleasedText())
 }
 
+func TestHoneyAttestedRelayLatchesNilProviderEventAsInvalid(t *testing.T) {
+	info := honeyTestInfo()
+	state, err := StartHoneyAttestedRelay(honeyTestContext(t, info), info, []byte(`{}`))
+	require.NoError(t, err)
+	require.ErrorContains(t, state.ObserveClaudeResponse(nil), "empty provider event")
+	completeHoneyState(t, state, true)
+	_, err = state.BuildSuccessEnvelope(info, HoneyNewAPISettlement{Amount: 1, Unit: "quota", Kind: "text_quota", Source: "newapi.final_settlement", BillingVersion: "v1", MultiplierVersion: "v1"}, "request-123", "upstream-123")
+	require.ErrorContains(t, err, "terminal contract")
+}
+
 func TestHoneyAttestedRelayBoundsTextBufferedBeforeReasoning(t *testing.T) {
 	info := honeyTestInfo()
 	state, err := StartHoneyAttestedRelay(honeyTestContext(t, info), info, []byte(`{}`))
@@ -127,6 +137,23 @@ func TestHoneyAttestedRelayRejectsReasoningAfterTextAndRequiresMessageStop(t *te
 	require.NoError(t, state.ObserveClaudeResponse(&dto.ClaudeResponse{Type: "content_block_delta", Delta: &dto.ClaudeMediaMessage{Type: "thinking_delta", Thinking: &reasoning}}))
 	require.NoError(t, state.ObserveClaudeResponse(&dto.ClaudeResponse{Type: "content_block_delta", Delta: &dto.ClaudeMediaMessage{Type: "text_delta", Text: &text}}))
 	require.ErrorContains(t, state.ObserveClaudeResponse(&dto.ClaudeResponse{Type: "content_block_delta", Delta: &dto.ClaudeMediaMessage{Type: "thinking_delta", Thinking: &late}}), "reasoning after text")
+	_, err = state.BuildSuccessEnvelope(info, HoneyNewAPISettlement{Amount: 1, Unit: "quota", Kind: "text_quota", Source: "newapi.final_settlement", BillingVersion: "v1", MultiplierVersion: "v1"}, "request-123", "upstream-123")
+	require.ErrorContains(t, err, "terminal contract")
+}
+
+func TestHoneyAttestedRelayRejectsSemanticEventsAfterMessageDelta(t *testing.T) {
+	info := honeyTestInfo()
+	state, err := StartHoneyAttestedRelay(honeyTestContext(t, info), info, []byte(`{}`))
+	require.NoError(t, err)
+	reasoning, buffered, late := "reasoning", "buffered answer", "late answer"
+	require.NoError(t, state.ObserveClaudeResponse(&dto.ClaudeResponse{Type: "message_start", Message: &dto.ClaudeMediaMessage{Model: "claude-sonnet-4-6"}}))
+	require.NoError(t, state.ObserveClaudeResponse(&dto.ClaudeResponse{Type: "content_block_delta", Delta: &dto.ClaudeMediaMessage{Type: "text_delta", Text: &buffered}}))
+	require.NoError(t, state.ObserveClaudeResponse(&dto.ClaudeResponse{Type: "content_block_delta", Delta: &dto.ClaudeMediaMessage{Type: "thinking_delta", Thinking: &reasoning}}))
+	require.NoError(t, state.ObserveClaudeResponse(&dto.ClaudeResponse{Type: "message_delta"}))
+	require.Equal(t, []string{buffered}, state.TakeReleasedText())
+	require.ErrorContains(t, state.ObserveClaudeResponse(&dto.ClaudeResponse{Type: "content_block_delta", Delta: &dto.ClaudeMediaMessage{Type: "text_delta", Text: &late}}), "after message_delta")
+	require.NoError(t, state.ObserveClaudeResponse(&dto.ClaudeResponse{Type: "ping"}))
+	require.NoError(t, state.ObserveClaudeResponse(&dto.ClaudeResponse{Type: "message_stop"}))
 	_, err = state.BuildSuccessEnvelope(info, HoneyNewAPISettlement{Amount: 1, Unit: "quota", Kind: "text_quota", Source: "newapi.final_settlement", BillingVersion: "v1", MultiplierVersion: "v1"}, "request-123", "upstream-123")
 	require.ErrorContains(t, err, "terminal contract")
 }
@@ -192,6 +219,12 @@ func TestHoneyAttestedRelayAcceptsSignatureMetadataWithoutCountingItAsReasoning(
 	visible, signature, text := "reasoning", "provider-signature", "answer"
 	require.NoError(t, state.ObserveClaudeResponse(&dto.ClaudeResponse{Type: "content_block_delta", Delta: &dto.ClaudeMediaMessage{Type: "thinking_delta", Thinking: &visible}}))
 	require.ErrorContains(t, state.ObserveClaudeResponse(&dto.ClaudeResponse{Type: "content_block_delta", Delta: &dto.ClaudeMediaMessage{Type: "signature_delta", Signature: signature, Thinking: &visible}}), "malformed")
+
+	info = honeyTestInfo()
+	state, err = StartHoneyAttestedRelay(honeyTestContext(t, info), info, []byte(`{}`))
+	require.NoError(t, err)
+	require.NoError(t, state.ObserveClaudeResponse(&dto.ClaudeResponse{Type: "message_start", Message: &dto.ClaudeMediaMessage{Model: "claude-sonnet-4-6"}}))
+	require.NoError(t, state.ObserveClaudeResponse(&dto.ClaudeResponse{Type: "content_block_delta", Delta: &dto.ClaudeMediaMessage{Type: "thinking_delta", Thinking: &visible}}))
 	require.NoError(t, state.ObserveClaudeResponse(&dto.ClaudeResponse{Type: "content_block_delta", Delta: &dto.ClaudeMediaMessage{Type: "signature_delta", Signature: signature}}))
 	require.NoError(t, state.ObserveClaudeResponse(&dto.ClaudeResponse{Type: "content_block_delta", Delta: &dto.ClaudeMediaMessage{Type: "text_delta", Text: &text}}))
 	require.NoError(t, state.ObserveClaudeResponse(&dto.ClaudeResponse{Type: "message_stop"}))
