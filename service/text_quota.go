@@ -350,7 +350,7 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 	if usage == nil {
 		extraContent = append(extraContent, "上游无计费信息")
 	}
-	if originUsage != nil {
+	if originUsage != nil && relayInfo.HoneyAttestedRelay == nil {
 		ObserveChannelAffinityUsageCacheByRelayFormat(ctx, billingUsage, relayInfo.GetFinalRequestRelayFormat())
 	}
 
@@ -416,6 +416,9 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 		if relayInfo.HoneyAttestedRelay != nil {
 			return settlement, settlementErr
 		}
+	}
+	if originUsage != nil && relayInfo.HoneyAttestedRelay != nil {
+		ObserveChannelAffinityUsageCacheByRelayFormat(ctx, billingUsage, relayInfo.GetFinalRequestRelayFormat())
 	}
 
 	if summary.TotalTokens != 0 {

@@ -49,6 +49,9 @@ func (s *BillingSession) Settle(actualQuota int) error {
 		s.settled = true
 		return nil
 	}
+	if s.relayInfo.HoneyAttestedRelay != nil {
+		return s.settleHoneyAttestedLocked(delta)
+	}
 	// 1) 调整资金来源（仅在尚未提交时执行，防止重复调用）
 	if !s.fundingSettled {
 		if err := s.funding.Settle(delta); err != nil {
@@ -76,6 +79,56 @@ func (s *BillingSession) Settle(actualQuota int) error {
 	}
 	s.settled = true
 	return tokenErr
+}
+
+// settleHoneyAttestedLocked settles Honey's signed path in user-safe order.
+// Token quota is an enforcement projection, while funding is the NewAPI user
+// bill. Never commit the user bill first and then fail the Attempt because the
+// projection could not be updated. The caller holds s.mu.
+func (s *BillingSession) settleHoneyAttestedLocked(delta int) error {
+	tokenAdjusted := false
+	if !s.relayInfo.IsPlayground {
+		var tokenErr error
+		if delta > 0 {
+			tokenErr = model.DecreaseTokenQuota(s.relayInfo.TokenId, s.relayInfo.TokenKey, delta)
+		} else {
+			tokenErr = model.IncreaseTokenQuota(s.relayInfo.TokenId, s.relayInfo.TokenKey, -delta)
+		}
+		if tokenErr != nil {
+			return tokenErr
+		}
+		tokenAdjusted = true
+	}
+
+	if err := s.funding.Settle(delta); err != nil {
+		if tokenAdjusted {
+			var rollbackErr error
+			if delta > 0 {
+				rollbackErr = model.IncreaseTokenQuota(s.relayInfo.TokenId, s.relayInfo.TokenKey, delta)
+			} else {
+				rollbackErr = model.DecreaseTokenQuota(s.relayInfo.TokenId, s.relayInfo.TokenKey, -delta)
+			}
+			if rollbackErr != nil {
+				common.SysLog(fmt.Sprintf(
+					"error rolling back attested token quota after funding settlement failed (userId=%d, tokenId=%d, delta=%d, fundingErr=%s): %s",
+					s.relayInfo.UserId,
+					s.relayInfo.TokenId,
+					delta,
+					err.Error(),
+					rollbackErr.Error(),
+				))
+				return fmt.Errorf("attested funding settlement failed: %w; token quota rollback failed: %v", err, rollbackErr)
+			}
+		}
+		return err
+	}
+
+	s.fundingSettled = true
+	if s.funding.Source() == BillingSourceSubscription {
+		s.relayInfo.SubscriptionPostDelta += int64(delta)
+	}
+	s.settled = true
+	return nil
 }
 
 // Refund 退还所有预扣费，幂等安全，异步执行。
